@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+Output/
+*.spec
+data/*.db
+data/sorties/

@@ -1,0 +1,1 @@
+# permet l'exécution via: python -m src.app.main

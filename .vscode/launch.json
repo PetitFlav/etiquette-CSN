@@ -1,0 +1,45 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Init DB",
+      "type": "python",
+      "request": "launch",
+      "module": "src.app.main",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": ["initdb"]
+    },
+    {
+      "name": "Simulate (exemple.csv)",
+      "type": "python",
+      "request": "launch",
+      "module": "src.app.main",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "simulate",
+        "data/exemple.csv",
+        "--expiration","31/12/2026",
+        "--sorties","data/sorties"
+      ]
+    },
+    {
+      "name": "List prints",
+      "type": "python",
+      "request": "launch",
+      "module": "src.app.main",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": ["listprints"]
+    },
+    {
+      "name": "GUI (Tkinter)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/gui.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
