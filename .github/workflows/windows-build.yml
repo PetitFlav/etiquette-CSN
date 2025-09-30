@@ -27,6 +27,7 @@ jobs:
         run: |
           pyinstaller --noconsole --onefile ^
             --name EtiquettesCSN ^
+            --paths src ^
             --add-data "src\\app\\templates;src\\app\\templates" ^
             gui.py
         shell: cmd
