@@ -1,1 +1,1 @@
-# etiquettes-zebra
+# etiquette-CSN
