@@ -22,6 +22,7 @@ from datetime import datetime
 # --- Impression Brother QL ---
 from brother_ql.backends import backend_factory
 from brother_ql.conversion import convert
+from brother_ql.raster import BrotherQLRaster
 from PIL import Image, ImageDraw, ImageFont
 
 # Import des modules applicatifs
@@ -44,18 +45,6 @@ from app.io_utils import lire_tableau
 from app.zpl import genere_zpl, ecrire_sorties
 from app.db import init_db, connect, record_print
 
-# --- Impression Brother QL ---
-from brother_ql.backends import backend_factory
-from brother_ql.conversion import convert
-from PIL import Image, ImageDraw, ImageFont
-
-from pathlib import Path
-import sys
-
-if getattr(sys, "frozen", False):
-    ROOT = Path(sys.executable).resolve().parent  # dossier de l’EXE
-else:
-    ROOT = Path(__file__).resolve().parent        # dossier du script
 
 import configparser
 
@@ -66,11 +55,12 @@ def load_config() -> dict[str, str]:
     if CONFIG_PATH.exists():
         cfg.read(CONFIG_PATH, encoding="utf-8")
     return {
-        "backend": cfg.get("impression", "backend", fallback="win32"),
+        "backend": cfg.get("impression", "backend", fallback="win32print"),
         "device": cfg.get("impression", "device", fallback="Brother QL-570"),
         "label": cfg.get("impression", "label", fallback="62"),
         "default_expire": cfg.get("app", "default_expire", fallback=""),
         "auto_import_file": cfg.get("app", "auto_import_file", fallback="deja_imprimes.csv"),
+        "rotate": cfg.get("impression", "rotate", fallback="0"),
     }
 
 
@@ -205,25 +195,82 @@ def make_label_image_simple(nom: str, prenom: str, expire: str, label_mm: int = 
     d.text((10, y), line3, fill=0, font=f_small)
     return img
 
-def _render_label_bytes(nom: str, prenom: str, expire: str, label_mm: int) -> bytes:
+def _open_bql_handle(backend_name: str, device: str | None):
+    """
+    Ouvre le handle d'impression brother_ql en fonction du backend.
+    - pyusb : essaie enumerate() si device non fourni
+    - linux_kernel, network, file : exigent 'device'
+    - dummy : toujours ok
+    """
+    be = backend_factory(backend_name)
+
+    backend_name = backend_name.lower().strip()
+    # Backends qui DEMANDENT un device explicite
+    needs_device = {"linux_kernel", "network", "file"}
+    if backend_name in needs_device:
+        if not device:
+            raise RuntimeError(
+                f"Le backend '{backend_name}' requiert 'device' dans config.ini :\n"
+                f" - linux_kernel : /dev/usb/lp0\n"
+                f" - network      : 192.168.1.50:9100\n"
+                f" - file         : /chemin/sortie.bin"
+            )
+        return be.open(device)
+
+    # Backends qui savent énumérer (pyusb, dummy)
+    if hasattr(be, "enumerate"):
+        targets = be.enumerate()
+        if device:
+            # On respecte la cible fournie (chemin/identifiant dépend du backend)
+            return be.open(device)
+        if not targets:
+            raise RuntimeError(
+                "Aucun périphérique Brother détecté pour backend='pyusb'.\n"
+                "Vérifie le câble/driver/permissions (libusb)."
+            )
+        # Sur pyusb, open() accepte l'élément retourné par enumerate()
+        return be.open(targets[0])
+
+    # Cas improbable : backend sans enumerate() et sans device
+    if not device:
+        raise RuntimeError(
+            f"Le backend '{backend_name}' ne fournit pas enumerate() et aucun 'device' n'a été donné."
+        )
+    return be.open(device)
+
+def _render_label_bytes(nom: str, prenom: str, expire: str, label_mm: int, rotate_val: str | int = 0):
     img = make_label_image_simple(nom, prenom, expire, label_mm)
-    render = convert(
-        model=MODEL,
+
+    from brother_ql.raster import BrotherQLRaster
+    qlr = BrotherQLRaster(MODEL)        # ex. "QL-570"
+    qlr.exception_on_warning = True
+
+    try:
+        rot = int(rotate_val)
+    except Exception:
+        rot = 0  # défaut : pas de rotation
+
+    res = convert(
+        qlr=qlr,
         images=[img],
         label=str(label_mm),
-        rotate="auto",
+        rotate=rot,
         threshold=70,
-        dpi_600=False,
+        dither=False,
+        compress=False,
         red=False,
+        dpi_600=False,
+        hq=True,
+        cut=False,
     )
-    return render.output, img
+
+    # convert() renvoie soit un objet avec .output, soit directement des bytes
+    payload = res.output if hasattr(res, "output") else res
+
+    return payload, img
 
 def _print_via_brotherql(backend_name: str, device: str | None, payload: bytes):
-    be = backend_factory(backend_name)  # <- ici backend_factory est parfait
-    targets = be.enumerate()
-    h = be.open(device) if device else (be.open(targets[0]) if targets else None)
-    if h is None:
-        raise RuntimeError(f"Aucune imprimante trouvée (backend={backend_name}, device={device!r}).")
+    h = _open_bql_handle(backend_name, device)
     h.write(payload)
 
 def _print_via_win32_driver(device_name: str, pil_image):
@@ -243,19 +290,16 @@ def _print_via_win32_driver(device_name: str, pil_image):
 
 def print_ql570_direct(nom: str, prenom: str, ddn: str, expire: str,
                        label: str = "62", backend_name: str = "pyusb",
-                       device: str | None = None):
+                       device: str | None = None, rotate: str = "0"):
     label_mm = int(label or "62")
-    payload, img = _render_label_bytes(nom, prenom, expire, label_mm)
+    payload, img = _render_label_bytes(nom, prenom, expire, label_mm, rotate_val=rotate)
 
-    if backend_name.lower() == "win32print":
-        # Windows → driver officiel
-        _print_via_win32_driver(device or "", img)
-    elif backend_name.lower() in {"pyusb", "linux_kernel", "network", "file", "dummy"}:
-        # Linux (ou simulation) → brother_ql
+    if backend_name.lower() in {"pyusb", "linux_kernel", "network", "file", "dummy"}:
         _print_via_brotherql(backend_name, device, payload)
+    elif backend_name.lower() == "win32print":
+        _print_via_win32_driver(device or "", img)
     else:
-        raise RuntimeError(f"Backend inconnu: {backend_name}. "
-                           f"Utilise 'win32print' (Windows) ou 'pyusb'/'linux_kernel'/'network'/'file'.")
+        raise RuntimeError(f"Backend inconnu : {backend_name}")
 
 DEFAULT_EXPIRATION = "31/12/2026"
 SORTIES_DIR = ROOT / "data" / "sorties"
@@ -306,7 +350,7 @@ class App(tk.Tk):
         
         ttk.Button(top, text="Importer CSV/Excel", command=self.on_import).pack(side=tk.LEFT, padx=(6, 0))
         self.cfg = load_config()
-        if self.cfg.get("backend") != "win32":
+        if self.cfg.get("backend") != "win32print":
             from app.zpl import genere_zpl, ecrire_sorties
             ttk.Button(top, text="Imprimer ZPL", command=self.on_print).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(top, text="Imprimer QL-570", command=self.on_print_ql570).pack(side=tk.LEFT, padx=(6, 0))
@@ -384,13 +428,13 @@ class App(tk.Tk):
             return
 
         # Impression directe (Windows: backend 'win32' + nom d’imprimante; Linux: 'pyusb')
-        # Adapte backend/device si besoin (ex: backend_name='win32', device='Brother QL-570')
-        backend_name = self.cfg.get("backend", "win32")
+        # Adapte backend/device si besoin (ex: backend_name='win32print', device='Brother QL-570')
+        backend_name = self.cfg.get("backend", "win32print")
         device_name = self.cfg.get("device") or None
         label = self.cfg.get("label", "62")
 
         # Sur Windows, tu mettras :
-        # backend_name = "win32"; device_name = "Brother QL-570"
+        # backend_name = "win32print; device_name = "Brother QL-570"
 
         old_cursor = self["cursor"]
         self.config(cursor="watch")
