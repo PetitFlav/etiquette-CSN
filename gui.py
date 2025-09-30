@@ -205,18 +205,57 @@ def make_label_image_simple(nom: str, prenom: str, expire: str, label_mm: int = 
     d.text((10, y), line3, fill=0, font=f_small)
     return img
 
+def _render_label_bytes(nom: str, prenom: str, expire: str, label_mm: int) -> bytes:
+    img = make_label_image_simple(nom, prenom, expire, label_mm)
+    render = convert(
+        model=MODEL,
+        images=[img],
+        label=str(label_mm),
+        rotate="auto",
+        threshold=70,
+        dpi_600=False,
+        red=False,
+    )
+    return render.output, img
+
+def _print_via_brotherql(backend_name: str, device: str | None, payload: bytes):
+    be = backend_factory(backend_name)  # <- ici backend_factory est parfait
+    targets = be.enumerate()
+    h = be.open(device) if device else (be.open(targets[0]) if targets else None)
+    if h is None:
+        raise RuntimeError(f"Aucune imprimante trouvée (backend={backend_name}, device={device!r}).")
+    h.write(payload)
+
+def _print_via_win32_driver(device_name: str, pil_image):
+    # Impression via driver Windows (win32print) : pas de brother_ql ici
+    import win32print, win32ui
+    from PIL import ImageWin
+    if not device_name:
+        device_name = win32print.GetDefaultPrinter()
+    hDC = win32ui.CreateDC()
+    hDC.CreatePrinterDC(device_name)
+    hDC.StartDoc("Etiquette CSN"); hDC.StartPage()
+    dib = ImageWin.Dib(pil_image.convert("RGB"))
+    # Ajuste la zone si besoin :
+    w, h = pil_image.size
+    dib.draw(hDC.GetHandleOutput(), (0, 0, w, h))
+    hDC.EndPage(); hDC.EndDoc(); hDC.DeleteDC()
+
 def print_ql570_direct(nom: str, prenom: str, ddn: str, expire: str,
                        label: str = "62", backend_name: str = "pyusb",
                        device: str | None = None):
-    """Envoie 1 étiquette à la QL-570 (Linux: pyusb/linux_kernel, Windows: win32)."""
-    backend = backend_factory(backend_name)
-    # auto-détection si device non fourni
-    printer = backend.open(device) if device else backend.open(backend.enumerate()[0])
+    label_mm = int(label or "62")
+    payload, img = _render_label_bytes(nom, prenom, expire, label_mm)
 
-    img = make_label_image_simple(nom, prenom, expire, int(label))
-    render = convert(model=MODEL, images=[img], label=label,
-                     rotate="auto", threshold=70, dpi_600=False, red=False)
-    printer.write(render.output)
+    if backend_name.lower() == "win32print":
+        # Windows → driver officiel
+        _print_via_win32_driver(device or "", img)
+    elif backend_name.lower() in {"pyusb", "linux_kernel", "network", "file", "dummy"}:
+        # Linux (ou simulation) → brother_ql
+        _print_via_brotherql(backend_name, device, payload)
+    else:
+        raise RuntimeError(f"Backend inconnu: {backend_name}. "
+                           f"Utilise 'win32print' (Windows) ou 'pyusb'/'linux_kernel'/'network'/'file'.")
 
 DEFAULT_EXPIRATION = "31/12/2026"
 SORTIES_DIR = ROOT / "data" / "sorties"
