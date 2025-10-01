@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+import sqlite3
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -463,17 +464,35 @@ class App(tk.Tk):
         try:
             # ---- Stats par personne (toutes expirations confondues) ----
             stats_person = {}
+            self.per_expire_count = {}
             try:
                 cur = cn.execute("SELECT nom, prenom, ddn, last_print, cnt FROM v_person_stats")
+            except sqlite3.OperationalError:
+                try:
+                    cur = cn.execute(
+                        """
+                        SELECT
+                            nom, prenom, ddn,
+                            MAX(CASE WHEN status='printed' THEN printed_at END) AS last_print,
+                            SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END)   AS cnt
+                        FROM prints
+                        GROUP BY nom, prenom, ddn
+                        """
+                    )
+                except sqlite3.OperationalError:
+                    self.toast("Base SQLite non initialisée. Utilisez Init DB.")
+                    return
             except Exception:
-                cur = cn.execute("""
+                cur = cn.execute(
+                    """
                     SELECT
                         nom, prenom, ddn,
                         MAX(CASE WHEN status='printed' THEN printed_at END) AS last_print,
                         SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END)   AS cnt
                     FROM prints
                     GROUP BY nom, prenom, ddn
-                """)
+                    """
+                )
             for row in cur.fetchall():
                 key = (
                     (row["nom"] or "").strip().lower(),
@@ -484,12 +503,18 @@ class App(tk.Tk):
 
             # ---- Compteur par personne+expiration (pour filtrer À imprimer / Déjà imprimées) ----
             per_expire = {}
-            cur2 = cn.execute("""
-                SELECT nom, prenom, ddn, expire,
-                       SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END) AS cnt_exp
-                FROM prints
-                GROUP BY nom, prenom, ddn, expire
-            """)
+            try:
+                cur2 = cn.execute(
+                    """
+                    SELECT nom, prenom, ddn, expire,
+                           SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END) AS cnt_exp
+                    FROM prints
+                    GROUP BY nom, prenom, ddn, expire
+                    """
+                )
+            except sqlite3.OperationalError:
+                self.toast("Base SQLite non initialisée. Utilisez Init DB.")
+                return
             for row in cur2.fetchall():
                 keyx = (
                     (row["nom"] or "").strip().lower(),
