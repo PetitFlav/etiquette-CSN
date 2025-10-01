@@ -13,304 +13,60 @@ Lancement : python gui.py
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
-
-# --- Impression Brother QL ---
-from brother_ql.backends import backend_factory
-from brother_ql.conversion import convert
-from brother_ql.raster import BrotherQLRaster
-from PIL import Image, ImageDraw, ImageFont
-
-# Import des modules applicatifs
-ROOT = Path(__file__).resolve().parent
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from pathlib import Path
-import sys
-if getattr(sys, "frozen", False):
-    ROOT = Path(sys.executable).resolve().parent
-else:
-    ROOT = Path(__file__).resolve().parent
-SRC_DIR = ROOT / "src"
-if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+from typing import Callable, Iterable
 
-from app.io_utils import lire_tableau
-from app.zpl import genere_zpl, ecrire_sorties
-from app.db import init_db, connect, record_print
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
-
-import configparser
-
-CONFIG_PATH = ROOT / "config.ini"
-
-def load_config() -> dict[str, str]:
-    cfg = configparser.ConfigParser()
-    if CONFIG_PATH.exists():
-        cfg.read(CONFIG_PATH, encoding="utf-8")
-    return {
-        "backend": cfg.get("impression", "backend", fallback="win32print"),
-        "device": cfg.get("impression", "device", fallback="Brother QL-570"),
-        "label": cfg.get("impression", "label", fallback="62"),
-        "default_expire": cfg.get("app", "default_expire", fallback=""),
-        "auto_import_file": cfg.get("app", "auto_import_file", fallback="deja_imprimes.csv"),
-        "rotate": cfg.get("impression", "rotate", fallback="0"),
-    }
+from src.app.config import (
+    DEFAULT_EXPIRATION,
+    DB_PATH,
+    ROOT,
+    SORTIES_DIR,
+    load_config,
+)
+from src.app.db import connect, init_db, record_print
+from src.app.imports import (
+    build_ddn_lookup_from_rows,
+    import_already_printed_csv,
+)
+from src.app.io_utils import lire_tableau
+from src.app.printing import print_ql570_direct
+from src.app.zpl import ecrire_sorties, genere_zpl
 
 
-def build_ddn_lookup_from_rows(rows: list[dict]) -> dict[tuple[str, str], str | None]:
-    """
-    Construit un mapping (nom_lower, prenom_lower) -> ddn (str) ou None s'il y a conflit / inconnu.
-    Prend les DDN depuis le tableau importé (colonnes 'Nom', 'Prénom', 'Date_de_naissance').
-    """
-    tmp: dict[tuple[str, str], set[str]] = {}
-    for r in rows or []:
-        nom = (r.get("Nom") or "").strip().lower()
-        prenom = (r.get("Prénom") or "").strip().lower()
-        ddn = (r.get("Date_de_naissance") or "").strip()
-        if not nom and not prenom:
-            continue
-        key = (nom, prenom)
-        tmp.setdefault(key, set())
-        if ddn:
-            tmp[key].add(ddn)
+__all__ = ["App"]
 
-    out: dict[tuple[str, str], str | None] = {}
-    for key, s in tmp.items():
-        if len(s) == 1:
-            out[key] = next(iter(s))           # DDN unique depuis les lignes
-        elif len(s) == 0:
-            out[key] = None                    # inconnu
-        else:
-            out[key] = None                    # conflit : plusieurs DDN pour le même Nom/Prénom
-    return out
-
-import csv
-from app.db import connect, record_print
-
-def import_already_printed_csv(csv_path: Path, expire: str, rows_ddn_lookup: dict[tuple[str, str], str | None] | None = None) -> tuple[int, int]:
-    """
-    Importe un CSV 'nom;prenom' et crée 1 ligne 'printed' par personne pour l'expiration donnée.
-    Résout la DDN ainsi :
-      1) DB: si une et une seule DDN non vide existe pour (nom, prenom), on la prend
-      2) Fallback: si rows_ddn_lookup en propose une (unique), on la prend
-      3) Sinon: DDN vide
-    Retourne (importés, ignorés).
-    """
-    if not csv_path.exists():
-        return (0, 0)
-
-    imported, skipped = 0, 0
-    with connect(DB_PATH) as cn:
-        for nom, prenom in csv.reader(open(csv_path, "r", encoding="utf-8", newline=""), delimiter=";"):
-            nom = (nom or "").strip()
-            prenom = (prenom or "").strip()
-            if not nom and not prenom:
-                skipped += 1
-                continue
-
-            key = (nom.lower(), prenom.lower())
-
-            # 1) Cherche DDN unique en base
-            ddns = cn.execute(
-                """
-                SELECT DISTINCT ddn
-                FROM prints
-                WHERE LOWER(nom)=? AND LOWER(prenom)=?
-                """,
-                key,
-            ).fetchall()
-            ddn_candidates = [ (row[0] or "").strip() for row in ddns if (row[0] or "").strip() ]
-            if len(ddn_candidates) == 1:
-                ddn = ddn_candidates[0]
-            elif len(ddn_candidates) > 1:
-                ddn = ""  # ambigu → joker
-            else:
-                # 2) Fallback: lookup depuis les lignes déjà importées dans la GUI
-                ddn = (rows_ddn_lookup.get(key) or "") if rows_ddn_lookup else ""
-                ddn = ddn or ""  # None -> ""
-
-            record_print(cn, nom, prenom, ddn=ddn, expire=expire, zpl=None, status="printed")
-            imported += 1
-
-    return (imported, skipped)
-
-MODEL = "QL-570"
-DEFAULT_CANVAS = {    # largeur px à 300 dpi
-    62: (696, 300),
-    38: (413, 300),
-    29: (306, 300),
-    12: (118, 300),
-}
-
-def saison_from_expire(expire: str) -> str:
-    """Calcule 'AAAA / AAAA+1' à partir d'une date JJ/MM/AAAA (expire)."""
-    from datetime import datetime
-    try:
-        dt = datetime.strptime(expire, "%d/%m/%Y")
-        return f"{dt.year-1} / {dt.year}"
-    except Exception:
-        return ""
-
-def _find_font() -> ImageFont.ImageFont | None:
-    """Essaie de charger une TTF lisible, sinon fallback PIL par défaut."""
-    for p in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
-        "C:\\Windows\\Fonts\\arial.ttf",                    # Windows
-    ]:
-        try:
-            if Path(p).exists():
-                return ImageFont.truetype(p, 36)
-        except Exception:
-            pass
-    return None
-
-def make_label_image_simple(nom: str, prenom: str, expire: str, label_mm: int = 62) -> Image.Image:
-    """Étiquette simple : Nom, Prénom, Saison."""
-    W, H = DEFAULT_CANVAS.get(label_mm, DEFAULT_CANVAS[62])
-    img = Image.new("1", (W, H), 1)
-    d = ImageDraw.Draw(img)
-    f_big = _find_font()
-    f_small = None
-    try:
-        if f_big and hasattr(f_big, "path"):
-            f_small = ImageFont.truetype(f_big.path, 28)   # type: ignore[attr-defined]
-    except Exception:
-        pass
-
-    line1 = (nom or "").upper()
-    line2 = (prenom or "").capitalize()
-    saison = saison_from_expire(expire) or expire
-    line3 = f"Saison : {saison}"
-
-    y = 10
-    d.text((10, y), line1, fill=0, font=f_big);   y += 70
-    d.text((10, y), line2, fill=0, font=f_big);   y += 70
-    d.text((10, y), line3, fill=0, font=f_small)
-    return img
-
-def _open_bql_handle(backend_name: str, device: str | None):
-    """
-    Ouvre le handle d'impression brother_ql en fonction du backend.
-    - pyusb : essaie enumerate() si device non fourni
-    - linux_kernel, network, file : exigent 'device'
-    - dummy : toujours ok
-    """
-    be = backend_factory(backend_name)
-
-    backend_name = backend_name.lower().strip()
-    # Backends qui DEMANDENT un device explicite
-    needs_device = {"linux_kernel", "network", "file"}
-    if backend_name in needs_device:
-        if not device:
-            raise RuntimeError(
-                f"Le backend '{backend_name}' requiert 'device' dans config.ini :\n"
-                f" - linux_kernel : /dev/usb/lp0\n"
-                f" - network      : 192.168.1.50:9100\n"
-                f" - file         : /chemin/sortie.bin"
-            )
-        return be.open(device)
-
-    # Backends qui savent énumérer (pyusb, dummy)
-    if hasattr(be, "enumerate"):
-        targets = be.enumerate()
-        if device:
-            # On respecte la cible fournie (chemin/identifiant dépend du backend)
-            return be.open(device)
-        if not targets:
-            raise RuntimeError(
-                "Aucun périphérique Brother détecté pour backend='pyusb'.\n"
-                "Vérifie le câble/driver/permissions (libusb)."
-            )
-        # Sur pyusb, open() accepte l'élément retourné par enumerate()
-        return be.open(targets[0])
-
-    # Cas improbable : backend sans enumerate() et sans device
-    if not device:
-        raise RuntimeError(
-            f"Le backend '{backend_name}' ne fournit pas enumerate() et aucun 'device' n'a été donné."
-        )
-    return be.open(device)
-
-def _render_label_bytes(nom: str, prenom: str, expire: str, label_mm: int, rotate_val: str | int = 0):
-    img = make_label_image_simple(nom, prenom, expire, label_mm)
-
-    from brother_ql.raster import BrotherQLRaster
-    qlr = BrotherQLRaster(MODEL)        # ex. "QL-570"
-    qlr.exception_on_warning = True
-
-    try:
-        rot = int(rotate_val)
-    except Exception:
-        rot = 0  # défaut : pas de rotation
-
-    res = convert(
-        qlr=qlr,
-        images=[img],
-        label=str(label_mm),
-        rotate=rot,
-        threshold=70,
-        dither=False,
-        compress=False,
-        red=False,
-        dpi_600=False,
-        hq=True,
-        cut=False,
-    )
-
-    # convert() renvoie soit un objet avec .output, soit directement des bytes
-    payload = res.output if hasattr(res, "output") else res
-
-    return payload, img
-
-def _print_via_brotherql(backend_name: str, device: str | None, payload: bytes):
-    h = _open_bql_handle(backend_name, device)
-    h.write(payload)
-
-def _print_via_win32_driver(device_name: str, pil_image):
-    # Impression via driver Windows (win32print) : pas de brother_ql ici
-    import win32print, win32ui
-    from PIL import ImageWin
-    if not device_name:
-        device_name = win32print.GetDefaultPrinter()
-    hDC = win32ui.CreateDC()
-    hDC.CreatePrinterDC(device_name)
-    hDC.StartDoc("Etiquette CSN"); hDC.StartPage()
-    dib = ImageWin.Dib(pil_image.convert("RGB"))
-    # Ajuste la zone si besoin :
-    w, h = pil_image.size
-    dib.draw(hDC.GetHandleOutput(), (0, 0, w, h))
-    hDC.EndPage(); hDC.EndDoc(); hDC.DeleteDC()
-
-def print_ql570_direct(nom: str, prenom: str, ddn: str, expire: str,
-                       label: str = "62", backend_name: str = "pyusb",
-                       device: str | None = None, rotate: str = "0"):
-    label_mm = int(label or "62")
-    payload, img = _render_label_bytes(nom, prenom, expire, label_mm, rotate_val=rotate)
-
-    if backend_name.lower() in {"pyusb", "linux_kernel", "network", "file", "dummy"}:
-        _print_via_brotherql(backend_name, device, payload)
-    elif backend_name.lower() == "win32print":
-        _print_via_win32_driver(device or "", img)
-    else:
-        raise RuntimeError(f"Backend inconnu : {backend_name}")
-
-DEFAULT_EXPIRATION = "31/12/2026"
-SORTIES_DIR = ROOT / "data" / "sorties"
-DB_PATH = ROOT / "data" / "app.db"
 
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        config_loader: Callable[[], dict[str, str]] = load_config,
+        csv_importer: Callable[[Path, str, dict[tuple[str, str], str | None] | None], tuple[int, int]] = import_already_printed_csv,
+        ddn_lookup_builder: Callable[[Iterable[dict]], dict[tuple[str, str], str | None]] = build_ddn_lookup_from_rows,
+        printer: Callable[..., None] = print_ql570_direct,
+        db_path: Path = DB_PATH,
+        sorties_dir: Path = SORTIES_DIR,
+        default_expiration: str = DEFAULT_EXPIRATION,
+    ):
         super().__init__()
         self.title("Étiquettes – GUI")
         self.geometry("1180x650")
         self.minsize(1000, 560)
+
+        self._config_loader = config_loader
+        self._csv_importer = csv_importer
+        self._ddn_lookup_builder = ddn_lookup_builder
+        self._printer = printer
+        self.db_path = Path(db_path)
+        self.sorties_dir = Path(sorties_dir)
+        self.default_expiration = default_expiration
+
+        self.cfg = self._config_loader()
+        self.expiration_default_value = self.cfg.get("default_expire") or self.default_expiration
 
         # État
         self.rows: list[dict] = []      # lignes importées (avec DDN/Expire cachés)
@@ -326,9 +82,8 @@ class App(tk.Tk):
         self.mode_var = tk.StringVar(value="tout")  # "a_imprimer" | "deja" | "tout"
         self.per_expire_count = {}  # (nom, prenom, ddn, expire) -> nb 'printed' pour CETTE expiration
 
-        self.cfg = load_config()
-        if self.cfg.get("default_expire"):
-            self.exp_var.set(self.cfg["default_expire"])
+        if self.expiration_default_value:
+            self.exp_var.set(self.expiration_default_value)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -349,14 +104,12 @@ class App(tk.Tk):
         cb.bind("<<ComboboxSelected>>", _on_mode_change)
         
         ttk.Button(top, text="Importer CSV/Excel", command=self.on_import).pack(side=tk.LEFT, padx=(6, 0))
-        self.cfg = load_config()
         if self.cfg.get("backend") != "win32print":
-            from app.zpl import genere_zpl, ecrire_sorties
             ttk.Button(top, text="Imprimer ZPL", command=self.on_print).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(top, text="Imprimer QL-570", command=self.on_print_ql570).pack(side=tk.LEFT, padx=(6, 0))
 
         ttk.Label(top, text="Expiration à garder :").pack(side=tk.LEFT, padx=(16, 4))
-        self.exp_var = tk.StringVar(value=DEFAULT_EXPIRATION)
+        self.exp_var = tk.StringVar(value=self.default_expiration)
         ttk.Entry(top, width=12, textvariable=self.exp_var).pack(side=tk.LEFT)
 
         ttk.Label(top, text="Nom :").pack(side=tk.LEFT, padx=(16, 4))
@@ -422,7 +175,7 @@ class App(tk.Tk):
         for idx in sorted(self.checked):
             r = self.view_rows[idx]
             if (r.get("Expire_le") or "").strip() == expiration:
-               selected.append(r)
+                selected.append(r)
         if not selected:
             messagebox.showinfo("Info", f"Aucune ligne sélectionnée avec Expire le = {expiration}.")
             return
@@ -432,6 +185,7 @@ class App(tk.Tk):
         backend_name = self.cfg.get("backend", "win32print")
         device_name = self.cfg.get("device") or None
         label = self.cfg.get("label", "62")
+        rotate = self.cfg.get("rotate", "0")
 
         # Sur Windows, tu mettras :
         # backend_name = "win32print; device_name = "Brother QL-570"
@@ -442,21 +196,25 @@ class App(tk.Tk):
         self.update_idletasks()
 
         try:
-        # Envoie 1 étiquette par personne
-            for r in selected:
-                nom     = (r.get("Nom") or "").strip()
-                prenom  = (r.get("Prénom") or "").strip()
-                ddn     = (r.get("Date_de_naissance") or "").strip()
-            expire  = (r.get("Expire_le") or "").strip()
+            with connect(self.db_path) as cn:
+                for r in selected:
+                    nom = (r.get("Nom") or "").strip()
+                    prenom = (r.get("Prénom") or "").strip()
+                    ddn = (r.get("Date_de_naissance") or "").strip()
+                    expire_val = (r.get("Expire_le") or "").strip()
 
-            print_ql570_direct(nom, prenom, ddn, expire,
-                               label=label, backend_name=backend_name, device=device_name)
+                    self._printer(
+                        nom,
+                        prenom,
+                        ddn,
+                        expire_val,
+                        label=label,
+                        backend_name=backend_name,
+                        device=device_name,
+                        rotate=rotate,
+                    )
 
-            # Journalise l'impression (status=printed)
-            cn = connect(DB_PATH)
-            with cn:
-                from app.db import record_print
-                record_print(cn, nom, prenom, ddn, expire, zpl=None, status="printed")
+                    record_print(cn, nom, prenom, ddn, expire_val, zpl=None, status="printed")
 
             # Rafraîchit stats + vue
             self.refresh_from_db_stats()
@@ -480,11 +238,10 @@ class App(tk.Tk):
         if not ok:
             return
         try:
-            db_file = DB_PATH
+            db_file = self.db_path
             if db_file.exists():
                 db_file.unlink()  # supprime la base
-            from app.db import init_db
-            init_db(DB_PATH)     # recrée tables / index / vues
+            init_db(self.db_path)     # recrée tables / index / vues
             self.refresh_from_db_stats()
             self.apply_filter()
             self.toast("Base réinitialisée.")
@@ -543,19 +300,24 @@ class App(tk.Tk):
             self.toast("Init DB annulé")
             return
         try:
-            init_db(DB_PATH)
+            init_db(self.db_path)
 
             # Auto-import si on trouve deja_imprimes.csv à la racine
             try:
-                
+
                 csv_init = ROOT / self.cfg.get("auto_import_file", "deja_imprimes.csv")
                 exp = (self.exp_var.get() or "").strip()
                 imp = 0
                 skip = 0
                 if csv_init.exists() and exp:
                     # construit un lookup DDN à partir des données déjà chargées dans la GUI
-                    ddn_lookup = build_ddn_lookup_from_rows(self.rows)
-                    imp, skip = import_already_printed_csv(csv_init, exp, rows_ddn_lookup=ddn_lookup)
+                    ddn_lookup = self._ddn_lookup_builder(self.rows)
+                    imp, skip = self._csv_importer(
+                        csv_init,
+                        exp,
+                        rows_ddn_lookup=ddn_lookup,
+                        db_path=self.db_path,
+                    )
                 if imp or skip:
                     self.toast(f"Import init: {imp} ajout(s), {skip} ignoré(s)")
                     # rafraîchir la vue après import
@@ -590,7 +352,7 @@ class App(tk.Tk):
     def refresh_from_db_stats(self):
         """Complète chaque row avec Derniere/Compteur (toutes expirations) + map per-expire."""
         try:
-            cn = connect(DB_PATH)
+            cn = connect(self.db_path)
         except Exception:
             return
 
@@ -790,14 +552,14 @@ class App(tk.Tk):
         try:
             self.toast("Génération des étiquettes…")
             fichiers = genere_zpl(selected_records)
-            ecrire_sorties(SORTIES_DIR, fichiers)
+            ecrire_sorties(self.sorties_dir, fichiers)
         except Exception as e:
             messagebox.showerror("Erreur", f"Génération ZPL : {e}")
             return
 
         # Journalise en DB
         try:
-            cn = connect(DB_PATH)
+            cn = connect(self.db_path)
             with cn:
                 for r, (fname, contenu) in zip(selected_records, fichiers):
                     record_print(
@@ -817,14 +579,16 @@ class App(tk.Tk):
         self.refresh_from_db_stats()
         self.apply_filter()
         self.toast("Impressions enregistrées et grille mise à jour")
-        messagebox.showinfo("Succès", f"{len(selected_records)} étiquette(s) générée(s) dans {SORTIES_DIR}.")
+        messagebox.showinfo(
+            "Succès",
+            f"{len(selected_records)} étiquette(s) générée(s) dans {self.sorties_dir}.",
+        )
 
     def toast(self, msg: str):
         self.status.set(msg)
 
 
 if __name__ == "__main__":
-    # Prépare l'arborescence
-    (ROOT / "data" / "sorties").mkdir(parents=True, exist_ok=True)
+    SORTIES_DIR.mkdir(parents=True, exist_ok=True)
     app = App()
     app.mainloop()
