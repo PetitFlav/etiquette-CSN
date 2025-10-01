@@ -388,55 +388,58 @@ class App(tk.Tk):
         except Exception:
             return
 
-        # ---- Stats par personne (toutes expirations confondues) ----
-        stats_person = {}
         try:
-            cur = cn.execute("SELECT nom, prenom, ddn, last_print, cnt FROM v_person_stats")
-        except Exception:
-            cur = cn.execute("""
-                SELECT
-                    nom, prenom, ddn,
-                    MAX(CASE WHEN status='printed' THEN printed_at END) AS last_print,
-                    SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END)   AS cnt
+            # ---- Stats par personne (toutes expirations confondues) ----
+            stats_person = {}
+            try:
+                cur = cn.execute("SELECT nom, prenom, ddn, last_print, cnt FROM v_person_stats")
+            except Exception:
+                cur = cn.execute("""
+                    SELECT
+                        nom, prenom, ddn,
+                        MAX(CASE WHEN status='printed' THEN printed_at END) AS last_print,
+                        SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END)   AS cnt
+                    FROM prints
+                    GROUP BY nom, prenom, ddn
+                """)
+            for row in cur.fetchall():
+                key = (
+                    (row["nom"] or "").strip().lower(),
+                    (row["prenom"] or "").strip().lower(),
+                    (row["ddn"] or "").strip(),
+                )
+                stats_person[key] = (row["last_print"], int(row["cnt"] or 0))
+
+            # ---- Compteur par personne+expiration (pour filtrer À imprimer / Déjà imprimées) ----
+            per_expire = {}
+            cur2 = cn.execute("""
+                SELECT nom, prenom, ddn, expire,
+                       SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END) AS cnt_exp
                 FROM prints
-                GROUP BY nom, prenom, ddn
+                GROUP BY nom, prenom, ddn, expire
             """)
-        for row in cur.fetchall():
-            key = (
-                (row["nom"] or "").strip().lower(),
-                (row["prenom"] or "").strip().lower(),
-                (row["ddn"] or "").strip(),
-            )
-            stats_person[key] = (row["last_print"], int(row["cnt"] or 0))
+            for row in cur2.fetchall():
+                keyx = (
+                    (row["nom"] or "").strip().lower(),
+                    (row["prenom"] or "").strip().lower(),
+                    (row["ddn"] or "").strip(),
+                    (row["expire"] or "").strip(),
+                )
+                per_expire[keyx] = int(row["cnt_exp"] or 0)
+            self.per_expire_count = per_expire  # <-- stocké pour apply_filter()
 
-        # ---- Compteur par personne+expiration (pour filtrer À imprimer / Déjà imprimées) ----
-        per_expire = {}
-        cur2 = cn.execute("""
-            SELECT nom, prenom, ddn, expire,
-                   SUM(CASE WHEN status='printed' THEN 1 ELSE 0 END) AS cnt_exp
-            FROM prints
-            GROUP BY nom, prenom, ddn, expire
-        """)
-        for row in cur2.fetchall():
-            keyx = (
-                (row["nom"] or "").strip().lower(),
-                (row["prenom"] or "").strip().lower(),
-                (row["ddn"] or "").strip(),
-                (row["expire"] or "").strip(),
-            )
-            per_expire[keyx] = int(row["cnt_exp"] or 0)
-        self.per_expire_count = per_expire  # <-- stocké pour apply_filter()
-
-        # ---- Injection sur les lignes importées ----
-        for r in self.rows:
-            pkey = (
-                (r.get("Nom", "") or "").strip().lower(),
-                (r.get("Prénom", "") or "").strip().lower(),
-                (r.get("Date_de_naissance", "") or "").strip(),
-            )
-            last, cnt_total = stats_person.get(pkey, (None, 0))
-            r["Derniere"] = last or ""
-            r["Compteur"] = cnt_total
+            # ---- Injection sur les lignes importées ----
+            for r in self.rows:
+                pkey = (
+                    (r.get("Nom", "") or "").strip().lower(),
+                    (r.get("Prénom", "") or "").strip().lower(),
+                    (r.get("Date_de_naissance", "") or "").strip(),
+                )
+                last, cnt_total = stats_person.get(pkey, (None, 0))
+                r["Derniere"] = last or ""
+                r["Compteur"] = cnt_total
+        finally:
+            cn.close()
 
 
     def apply_filter(self):
@@ -591,8 +594,7 @@ class App(tk.Tk):
 
         # Journalise en DB
         try:
-            cn = connect(self.db_path)
-            with cn:
+            with connect(self.db_path) as cn:
                 for r, (fname, contenu) in zip(selected_records, fichiers):
                     record_print(
                         cn,
