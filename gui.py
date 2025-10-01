@@ -235,9 +235,9 @@ class App(tk.Tk):
     def on_reset_db(self):
         ok = messagebox.askyesno(
             "Confirmation",
-            "Réinitialiser la base ?\n\n"
-            "Cette action SUPPRIME le fichier data/app.db puis recrée le schéma.",
+            "Réinitialiser la base ?",
             icon=messagebox.WARNING,
+            detail="Cette action SUPPRIME le fichier data/app.db puis recrée le schéma.",
         )
         if not ok:
             return
@@ -321,10 +321,12 @@ class App(tk.Tk):
     def on_init_db(self):
         ok = messagebox.askyesno(
             "Confirmation",
-            "Initialiser / mettre à jour la base SQLite ?\n\n"
-            "Cette opération crée / met à jour le schéma (tables, index, vues)\n"
-            "sans supprimer les données existantes.",
+            "Initialiser / mettre à jour la base SQLite ?",
             icon=messagebox.WARNING,
+            detail=(
+                "Cette opération crée / met à jour le schéma (tables, index, vues)\n"
+                "sans supprimer les données existantes."
+            ),
         )
         if not ok:
             self.toast("Init DB annulé")
