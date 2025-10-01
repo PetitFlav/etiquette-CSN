@@ -83,10 +83,13 @@ class App(tk.Tk):
 
         self.mode_var = tk.StringVar(value="tout")  # "a_imprimer" | "deja" | "tout"
         self.per_expire_count = {}  # (nom, prenom, ddn, expire) -> nb 'printed' pour CETTE expiration
+        self._splash_window: tk.Toplevel | None = None
+        self._splash_image = None
 
         if self.expiration_default_value:
             self.exp_var.set(self.expiration_default_value)
 
+        self.after_idle(self._show_splash_screen)
         self._load_last_import_if_available()
 
     # ---------------- UI ----------------
@@ -159,6 +162,75 @@ class App(tk.Tk):
         ttk.Label(self, textvariable=self.status, anchor=tk.W).pack(fill=tk.X, padx=8, pady=(0, 6))
 
         self._update_headers()
+
+    def _show_splash_screen(self):
+        splash_cfg = (self.cfg.get("splash_image") or "").strip()
+        if not splash_cfg:
+            return
+
+        splash_path = Path(splash_cfg)
+        if not splash_path.is_absolute():
+            splash_path = ROOT / splash_path
+
+        if not splash_path.exists():
+            self.toast(f"Illustration introuvable: {splash_path}")
+            return
+
+        try:
+            from PIL import Image, ImageTk  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency at runtime
+            self.toast(f"Impossible d'afficher l'illustration (Pillow manquant): {exc}")
+            return
+
+        try:
+            image = Image.open(splash_path)
+        except Exception as exc:  # pragma: no cover - depends on local file
+            self.toast(f"Illustration illisible: {exc}")
+            return
+
+        splash = tk.Toplevel(self)
+        splash.title("Bienvenue")
+        splash.transient(self)
+        splash.resizable(False, False)
+
+        try:
+            photo = ImageTk.PhotoImage(image)
+        except Exception as exc:  # pragma: no cover - depends on Tk capabilities
+            splash.destroy()
+            self.toast(f"Affichage de l'illustration impossible: {exc}")
+            return
+
+        label = ttk.Label(splash, image=photo)
+        label.image = photo  # Conserve une référence pour Tkinter
+        label.pack()
+
+        self._splash_window = splash
+        self._splash_image = photo
+
+        splash.update_idletasks()
+        self.update_idletasks()
+        width = splash.winfo_width()
+        height = splash.winfo_height()
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_w = self.winfo_width()
+        parent_h = self.winfo_height()
+        x = parent_x + max((parent_w - width) // 2, 0)
+        y = parent_y + max((parent_h - height) // 2, 0)
+        splash.geometry(f"{width}x{height}+{x}+{y}")
+
+        splash.after(3000, self._hide_splash_screen)
+
+    def _hide_splash_screen(self):
+        if self._splash_window is None:
+            return
+        try:
+            self._splash_window.destroy()
+        except Exception:
+            pass
+        finally:
+            self._splash_window = None
+            self._splash_image = None
 
     def on_print_ql570(self):
         # Vérifs basiques

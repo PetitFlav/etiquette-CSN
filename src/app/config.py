@@ -45,6 +45,7 @@ def load_config() -> Dict[str, str]:
         "label": cfg.get("impression", "label", fallback="62"),
         "default_expire": cfg.get("app", "default_expire", fallback=""),
         "auto_import_file": cfg.get("app", "auto_import_file", fallback="deja_imprimes.csv"),
+        "splash_image": cfg.get("app", "splash_image", fallback=""),
         "rotate": cfg.get("impression", "rotate", fallback="0"),
     }
 
