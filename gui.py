@@ -31,6 +31,8 @@ from src.app.db import connect, init_db, record_print
 from src.app.imports import (
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
+    load_last_import,
+    persist_last_import,
 )
 from src.app.io_utils import lire_tableau
 from src.app.printing import print_ql570_direct
@@ -84,6 +86,8 @@ class App(tk.Tk):
 
         if self.expiration_default_value:
             self.exp_var.set(self.expiration_default_value)
+
+        self._load_last_import_if_available()
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -274,6 +278,32 @@ class App(tk.Tk):
         self.tree.heading("Nom", text="Nom" + arrow_nom, command=lambda: self.sort_by("Nom"))
         self.tree.heading("Prénom", text="Prénom" + arrow_prenom, command=lambda: self.sort_by("Prénom"))
 
+    def _persist_last_import(self, source: Path):
+        try:
+            metadata = persist_last_import(source)
+        except Exception as exc:  # pragma: no cover - best-effort persistence
+            self.toast(f"Sauvegarde dernier import impossible: {exc}")
+            return
+
+        label = metadata.get("source_name") or source.name
+        self.toast(f"Fichier chargé: {label} ({len(self.rows)} lignes)")
+
+    def _load_last_import_if_available(self):
+        try:
+            rows, metadata = load_last_import()
+        except Exception as exc:  # pragma: no cover - best-effort loading
+            self.toast(f"Dernier import illisible: {exc}")
+            return
+
+        if not rows:
+            return
+
+        self.rows = rows
+        self.refresh_from_db_stats()
+        self.apply_filter()
+        name = metadata.get("source_name") or metadata.get("cached_name") or "Dernier import"
+        self.toast(f"Dernier import rechargé: {name} ({len(self.rows)} lignes)")
+
     # -------------- Actions --------------
     def on_refresh(self):
         # Rafraîchit depuis la BDD (stats) puis réapplique le filtre (incluant la validité)
@@ -345,7 +375,7 @@ class App(tk.Tk):
             self.rows = df.to_dict(orient="records")
             self.refresh_from_db_stats()
             self.apply_filter()
-            self.toast(f"Fichier chargé: {Path(path).name} ({len(self.rows)} lignes)")
+            self._persist_last_import(Path(path))
         except Exception as e:
             messagebox.showerror("Erreur", f"Import: {e}")
 

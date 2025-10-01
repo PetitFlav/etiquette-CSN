@@ -22,6 +22,8 @@ SRC_DIR = ROOT / "src"
 DATA_DIR = ROOT / "data"
 SORTIES_DIR = DATA_DIR / "sorties"
 DB_PATH = DATA_DIR / "app.db"
+LAST_IMPORT_DIR = DATA_DIR / "last_import"
+LAST_IMPORT_METADATA = DATA_DIR / "last_import.json"
 DEFAULT_EXPIRATION = "31/12/2026"
 CONFIG_PATH = ROOT / "config.ini"
 
@@ -53,6 +55,8 @@ __all__ = [
     "DATA_DIR",
     "SORTIES_DIR",
     "DB_PATH",
+    "LAST_IMPORT_DIR",
+    "LAST_IMPORT_METADATA",
     "DEFAULT_EXPIRATION",
     "CONFIG_PATH",
     "load_config",
