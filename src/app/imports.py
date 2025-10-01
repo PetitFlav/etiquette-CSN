@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import csv
+import json
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .config import DB_PATH
+from .config import DB_PATH, LAST_IMPORT_DIR, LAST_IMPORT_METADATA
 from .db import connect, record_print
+from .io_utils import lire_tableau
 
 
 Row = dict[str, object]
@@ -88,7 +92,58 @@ def import_already_printed_csv(
     return (imported, skipped)
 
 
+def persist_last_import(source: Path) -> dict[str, object]:
+    """Cache the latest imported file and return the stored metadata."""
+
+    if not source.exists():
+        raise FileNotFoundError(f"Fichier introuvable: {source}")
+
+    LAST_IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+    target = LAST_IMPORT_DIR / source.name
+    shutil.copy2(source, target)
+
+    metadata: dict[str, object] = {
+        "source_path": str(source.resolve()),
+        "source_name": source.name,
+        "cached_path": str(target.resolve()),
+        "cached_name": target.name,
+        "stored_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    LAST_IMPORT_METADATA.parent.mkdir(parents=True, exist_ok=True)
+    LAST_IMPORT_METADATA.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    return metadata
+
+
+def load_last_import() -> tuple[list[dict], dict[str, object]]:
+    """Return cached rows and metadata when a previous import exists."""
+
+    if not LAST_IMPORT_METADATA.exists():
+        return ([], {})
+
+    try:
+        metadata = json.loads(LAST_IMPORT_METADATA.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return ([], {})
+
+    cached_path = Path(metadata.get("cached_path") or "")
+    if not cached_path.exists():
+        return ([], metadata)
+
+    df = lire_tableau(cached_path)
+    rows = df.to_dict(orient="records")
+    metadata.setdefault("source_name", cached_path.name)
+    metadata.setdefault("cached_name", cached_path.name)
+    return (rows, metadata)
+
+
 __all__ = [
     "build_ddn_lookup_from_rows",
     "import_already_printed_csv",
+    "persist_last_import",
+    "load_last_import",
 ]

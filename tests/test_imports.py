@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.app.db import connect, init_db, record_print
-from src.app.imports import build_ddn_lookup_from_rows, import_already_printed_csv
+from src.app.imports import (
+    build_ddn_lookup_from_rows,
+    import_already_printed_csv,
+    load_last_import,
+    persist_last_import,
+)
 
 
 def test_build_ddn_lookup_handles_conflicts():
@@ -56,3 +63,39 @@ def test_import_already_printed_csv_resolves_ddn(tmp_path):
         ("Beta", "User", "10/10/2010"),
         ("Gamma", "User", ""),
     ]
+
+
+def _write_sample_csv(path: Path) -> None:
+    path.write_text(
+        "Ignoré\nIgnoré\nIgnoré\n"
+        "Nom,Prénom,Date_de_naissance,Expire_le\n"
+        "Alpha,Test,01/01/2000,31/12/2025\n",
+        encoding="utf-8",
+    )
+
+
+def test_persist_and_load_last_import(tmp_path, monkeypatch):
+    from src.app import imports as imports_mod
+
+    source = tmp_path / "import.csv"
+    _write_sample_csv(source)
+
+    cache_dir = tmp_path / "cache"
+    metadata_file = tmp_path / "meta.json"
+
+    monkeypatch.setattr(imports_mod, "LAST_IMPORT_DIR", cache_dir)
+    monkeypatch.setattr(imports_mod, "LAST_IMPORT_METADATA", metadata_file)
+
+    metadata = persist_last_import(source)
+
+    assert metadata_file.exists()
+    assert Path(metadata["cached_path"]).exists()
+    assert metadata["source_name"] == source.name
+    assert metadata["cached_name"] == source.name
+    assert "stored_at" in metadata
+
+    rows, loaded_metadata = load_last_import()
+
+    assert len(rows) == 1
+    assert rows[0]["Nom"] == "Alpha"
+    assert loaded_metadata["cached_name"] == source.name
