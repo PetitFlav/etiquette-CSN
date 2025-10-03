@@ -98,11 +98,14 @@ def make_label_image_simple(nom: str, prenom: str, expire: str, label_mm: int = 
     saison = saison_from_expire(expire) or expire
     line3 = f"Saison : {saison}"
 
+    line_height_big = _line_height(font_big)
+
     y = 10
     draw.text((10, y), line1, fill=0, font=font_big)
-    y += _line_height(font_big) + 10
+    y += line_height_big + 10
     draw.text((10, y), line2, fill=0, font=font_big)
-    y += _line_height(font_big) + 10
+    y += line_height_big + 10
+    y += line_height_big
     draw.text((10, y), line3, fill=0, font=font_saison)
     return img
 

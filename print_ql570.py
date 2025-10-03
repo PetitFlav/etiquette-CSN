@@ -138,11 +138,14 @@ def make_label_image(nom: str, prenom: str, ddn: str, expire: str, label_mm: int
     line3 = f"Saison : {saison}" if saison else f"Saison : {expire}"
 
     # Placement
+    line_height_big = _line_height(f_big)
+
     y = 10
     d.text((10, y), line1, fill=0, font=f_big)
-    y += _line_height(f_big) + 10
+    y += line_height_big + 10
     d.text((10, y), line2, fill=0, font=f_big)
-    y += _line_height(f_big) + 10
+    y += line_height_big + 10
+    y += line_height_big
     d.text((10, y), line3, fill=0, font=f_saison)
 
     return img
