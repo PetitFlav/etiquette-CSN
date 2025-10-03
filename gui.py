@@ -210,12 +210,37 @@ class App(tk.Tk):
 
         splash.update_idletasks()
         self.update_idletasks()
+
+        try:
+            if not self.winfo_viewable():
+                self.wait_visibility()
+        except Exception:
+            # La fenêtre principale peut ne pas encore être mappée (ex: premier affichage)
+            # Dans ce cas, on s'appuie sur les dimensions requises/écran ci-dessous.
+            pass
+
+        self.update_idletasks()
+
         width = splash.winfo_width()
         height = splash.winfo_height()
-        parent_x = self.winfo_rootx()
-        parent_y = self.winfo_rooty()
+
         parent_w = self.winfo_width()
         parent_h = self.winfo_height()
+        if parent_w <= 1 or parent_h <= 1:
+            parent_w = max(parent_w, self.winfo_reqwidth())
+            parent_h = max(parent_h, self.winfo_reqheight())
+        if parent_w <= 1 or parent_h <= 1:
+            parent_w = self.winfo_screenwidth()
+            parent_h = self.winfo_screenheight()
+
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        if parent_x <= 0 and parent_y <= 0:
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            parent_x = max((screen_w - parent_w) // 2, 0)
+            parent_y = max((screen_h - parent_h) // 2, 0)
+
         x = parent_x + max((parent_w - width) // 2, 0)
         y = parent_y + max((parent_h - height) // 2, 0)
         splash.geometry(f"{width}x{height}+{x}+{y}")
