@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable
 
 from .config import DB_PATH, LAST_IMPORT_DIR, LAST_IMPORT_METADATA
 from .db import connect, record_print
-from .io_utils import lire_tableau
+from .io_utils import lire_tableau, normalize_name
 
 
 Row = dict[str, object]
@@ -20,8 +20,10 @@ def build_ddn_lookup_from_rows(rows: Iterable[Row]) -> dict[LookupKey, str | Non
     """Build a lookup ``(nom_lower, prenom_lower) -> ddn`` from imported rows."""
     tmp: dict[LookupKey, set[str]] = {}
     for r in rows or []:
-        nom = (str(r.get("Nom") or "").strip().lower())
-        prenom = (str(r.get("Prénom") or "").strip().lower())
+        nom_normalized = normalize_name(str(r.get("Nom") or ""))
+        prenom_normalized = normalize_name(str(r.get("Prénom") or ""))
+        nom = nom_normalized.lower()
+        prenom = prenom_normalized.lower()
         ddn = (str(r.get("Date_de_naissance") or "").strip())
         if not nom and not prenom:
             continue
@@ -57,8 +59,8 @@ def import_already_printed_csv(
         reader = csv.reader(fh, delimiter=";")
         with connect_fn(db_target) as cn:  # type: ignore[call-arg]
             for nom, prenom in reader:
-                nom = (nom or "").strip()
-                prenom = (prenom or "").strip()
+                nom = normalize_name((nom or "").strip())
+                prenom = normalize_name((prenom or "").strip())
                 if not nom and not prenom:
                     skipped += 1
                     continue
