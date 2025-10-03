@@ -25,7 +25,7 @@ Usage examples :
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 from pathlib import Path
 from datetime import datetime
 import sys
@@ -60,22 +60,52 @@ class PrintParams:
     dpi_600: bool = False          # QL-570 = 300dpi → False
     red: bool = False              # QL-570 n’imprime pas en rouge (False)
 
-def _find_font() -> Optional[ImageFont.FreeTypeFont]:
+_FONT_CANDIDATES = (
+    (
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ),
+    (
+        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    ),
+    (
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/arialbd.ttf"),
+    ),
+)
+
+
+def _find_font(*, size: int = 36, bold: bool = False) -> Optional[ImageFont.FreeTypeFont]:
     """
     Essaie de charger une police TrueType lisible si présente, sinon utilise la police PIL par défaut.
     """
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",           # Linux
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",      # macOS
-        "C:\\Windows\\Fonts\\arial.ttf",                             # Windows
-    ]
-    for p in candidates:
-        if Path(p).exists():
+    for regular_path, bold_path in _FONT_CANDIDATES:
+        target = bold_path if bold and bold_path else regular_path
+        if not target:
+            continue
+        if target.exists():
             try:
-                return ImageFont.truetype(p, 36)
+                return ImageFont.truetype(str(target), size)
             except Exception:
                 continue
+    if bold:
+        return _find_font(size=size, bold=False)
     return None  # PIL default bitmap font sera utilisée
+
+
+def _line_height(font: Optional[ImageFont.ImageFont]) -> int:
+    if font is None:
+        return 40
+    try:
+        ascent, descent = font.getmetrics()
+        return ascent + descent
+    except Exception:
+        try:
+            bbox = font.getbbox("Ag")
+            return bbox[3] - bbox[1]
+        except Exception:
+            return getattr(font, "size", 40)
 
 def saison_from_expire(expire: str) -> str:
     # expire attendu "JJ/MM/AAAA"
@@ -97,12 +127,9 @@ def make_label_image(nom: str, prenom: str, ddn: str, expire: str, label_mm: int
 
     # Police
     f_big = _find_font()
-    f_small = None
-    try:
-        if f_big:
-            f_small = ImageFont.truetype(f_big.path, 28)  # type: ignore
-    except Exception:
-        pass
+    f_small = _find_font(size=28)
+    saison_font_size = max(getattr(f_big, "size", 36), getattr(f_small, "size", 28))
+    f_saison = _find_font(size=saison_font_size, bold=True) or f_big or f_small
 
     # Texte
     saison = saison_from_expire(expire)
@@ -112,9 +139,11 @@ def make_label_image(nom: str, prenom: str, ddn: str, expire: str, label_mm: int
 
     # Placement
     y = 10
-    d.text((10, y), line1, fill=0, font=f_big) ; y += 70
-    d.text((10, y), line2, fill=0, font=f_big) ; y += 70
-    d.text((10, y), line3, fill=0, font=f_small)
+    d.text((10, y), line1, fill=0, font=f_big)
+    y += _line_height(f_big) + 10
+    d.text((10, y), line2, fill=0, font=f_big)
+    y += _line_height(f_big) + 10
+    d.text((10, y), line3, fill=0, font=f_saison)
 
     return img
 

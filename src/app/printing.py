@@ -33,18 +33,52 @@ def saison_from_expire(expire: str) -> str:
         return ""
 
 
-def _find_font() -> ImageFont.ImageFont | None:
-    """Attempt to load a readable TTF font, otherwise fallback to PIL's default."""
-    for path in [
+_FONT_CANDIDATES: tuple[tuple[Path, Path | None], ...] = (
+    (
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ),
+    (
+        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    ),
+    (
         Path("C:/Windows/Fonts/arial.ttf"),
-    ]:
+        Path("C:/Windows/Fonts/arialbd.ttf"),
+    ),
+)
+
+
+def _find_font(*, size: int = 36, bold: bool = False) -> ImageFont.ImageFont | None:
+    """Attempt to load a readable TTF font, otherwise fallback to PIL's default."""
+
+    for regular_path, bold_path in _FONT_CANDIDATES:
+        target = bold_path if bold and bold_path else regular_path
+        if not target:
+            continue
         try:
-            if path.exists():
-                return ImageFont.truetype(str(path), 36)
+            if target.exists():
+                return ImageFont.truetype(str(target), size)
         except Exception:  # pragma: no cover - font loading depends on OS
-            pass
+            continue
+
+    if bold:
+        return _find_font(size=size, bold=False)
     return None
+
+
+def _line_height(font: ImageFont.ImageFont | None) -> int:
+    if font is None:
+        return 40
+    try:
+        ascent, descent = font.getmetrics()
+        return ascent + descent
+    except Exception:  # pragma: no cover - depends on font backend
+        try:
+            bbox = font.getbbox("Ag")
+            return bbox[3] - bbox[1]
+        except Exception:  # pragma: no cover - depends on font backend
+            return getattr(font, "size", 40)
 
 
 def make_label_image_simple(nom: str, prenom: str, expire: str, label_mm: int = 62) -> Image.Image:
@@ -53,12 +87,11 @@ def make_label_image_simple(nom: str, prenom: str, expire: str, label_mm: int = 
     img = Image.new("1", (width, height), 1)
     draw = ImageDraw.Draw(img)
     font_big = _find_font()
-    font_small = None
-    try:
-        if font_big and hasattr(font_big, "path"):
-            font_small = ImageFont.truetype(font_big.path, 28)  # type: ignore[attr-defined]
-    except Exception:  # pragma: no cover - best effort font selection
-        pass
+    font_small = _find_font(size=28)
+    saison_font_size = max(getattr(font_big, "size", 36), getattr(font_small, "size", 28))
+    font_saison = _find_font(size=saison_font_size, bold=True)
+    if font_saison is None:
+        font_saison = font_big or font_small
 
     line1 = (nom or "").upper()
     line2 = (prenom or "").capitalize()
@@ -67,10 +100,10 @@ def make_label_image_simple(nom: str, prenom: str, expire: str, label_mm: int = 
 
     y = 10
     draw.text((10, y), line1, fill=0, font=font_big)
-    y += 70
+    y += _line_height(font_big) + 10
     draw.text((10, y), line2, fill=0, font=font_big)
-    y += 70
-    draw.text((10, y), line3, fill=0, font=font_small)
+    y += _line_height(font_big) + 10
+    draw.text((10, y), line3, fill=0, font=font_saison)
     return img
 
 
