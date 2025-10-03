@@ -58,6 +58,41 @@ def test_make_label_image_simple_requests_bold_font(monkeypatch):
     assert all(size >= max(regular_sizes) for size in bold_calls)
 
 
+def test_make_label_image_simple_inserts_blank_line(monkeypatch):
+    positions: list[tuple[tuple[int, int], str]] = []
+
+    class DummyFont:
+        def __init__(self, size: int) -> None:
+            self.size = size
+
+        def getmetrics(self) -> tuple[int, int]:
+            return self.size, self.size // 4
+
+    def fake_find_font(*, size: int = 36, bold: bool = False):  # type: ignore[override]
+        return DummyFont(size)
+
+    class DummyDraw:
+        def __init__(self, _img: Image.Image) -> None:
+            pass
+
+        def text(self, xy: tuple[int, int], text: str, *, fill: int, font: DummyFont) -> None:
+            positions.append((xy, text))
+
+    monkeypatch.setattr(printing, "_find_font", fake_find_font)
+    monkeypatch.setattr(printing.ImageDraw, "Draw", lambda img: DummyDraw(img))
+
+    printing.make_label_image_simple("Nom", "Prenom", "01/01/2025")
+
+    assert [label for (_, label) in positions] == ["NOM", "Prenom", "Saison : 2024 / 2025"]
+
+    line_height = printing._line_height(fake_find_font())
+    first_gap = positions[1][0][1] - positions[0][0][1]
+    second_gap = positions[2][0][1] - positions[1][0][1]
+
+    assert first_gap == line_height + 10
+    assert second_gap == line_height + 10 + line_height
+
+
 def test_print_ql570_direct_builds_payload(monkeypatch):
     called = {}
 
