@@ -16,12 +16,14 @@ def test_build_ddn_lookup_handles_conflicts():
         {"Nom": "Dup", "Prénom": "Test", "Date_de_naissance": "01/01/2000"},
         {"Nom": "Dup", "Prénom": "Test", "Date_de_naissance": "02/02/2000"},
         {"Nom": "Unique", "Prénom": "One", "Date_de_naissance": "03/03/2000"},
+        {"Nom": "dùpônt", "Prénom": "álix", "Date_de_naissance": "04/04/2000"},
         {"Nom": "", "Prénom": "", "Date_de_naissance": ""},
     ]
 
     lookup = build_ddn_lookup_from_rows(rows)
     assert lookup[("unique", "one")] == "03/03/2000"
     assert lookup[("dup", "test")] is None
+    assert lookup[("dupont", "alix")] == "04/04/2000"
 
 
 def test_import_already_printed_csv_resolves_ddn(tmp_path):
@@ -59,10 +61,40 @@ def test_import_already_printed_csv_resolves_ddn(tmp_path):
         ).fetchall()
 
     assert [tuple(row) for row in rows] == [
-        ("Alpha", "Test", "05/05/2005"),
-        ("Beta", "User", "10/10/2010"),
-        ("Gamma", "User", ""),
+        ("ALPHA", "TEST", "05/05/2005"),
+        ("BETA", "USER", "10/10/2010"),
+        ("GAMMA", "USER", ""),
     ]
+
+
+def test_import_normalizes_names(tmp_path):
+    db_path = tmp_path / "app.db"
+    init_db(db_path)
+
+    csv_path = tmp_path / "import.csv"
+    csv_path.write_text("dùpônt;álix\n", encoding="utf-8")
+
+    rows_lookup = build_ddn_lookup_from_rows(
+        [{"Nom": "dùpônt", "Prénom": "álix", "Date_de_naissance": "01/01/2000"}]
+    )
+
+    imported, skipped = import_already_printed_csv(
+        csv_path,
+        "31/12/2025",
+        rows_ddn_lookup=rows_lookup,
+        db_path=db_path,
+    )
+
+    assert imported == 1
+    assert skipped == 0
+
+    with connect(db_path) as cn:
+        row = cn.execute(
+            "SELECT nom, prenom, ddn FROM prints WHERE expire=?",
+            ("31/12/2025",),
+        ).fetchone()
+
+    assert tuple(row) == ("DUPONT", "ALIX", "01/01/2000")
 
 
 def _write_sample_csv(path: Path) -> None:
@@ -97,5 +129,5 @@ def test_persist_and_load_last_import(tmp_path, monkeypatch):
     rows, loaded_metadata = load_last_import()
 
     assert len(rows) == 1
-    assert rows[0]["Nom"] == "Alpha"
+    assert rows[0]["Nom"] == "ALPHA"
     assert loaded_metadata["cached_name"] == source.name

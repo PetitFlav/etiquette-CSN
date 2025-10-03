@@ -1,8 +1,19 @@
 from __future__ import annotations
 from pathlib import Path
+import unicodedata
 import pandas as pd
 
 COLS_WANTED = ["Nom", "Prénom", "Date_de_naissance", "Expire_le"]
+
+
+def strip_accents(text: str) -> str:
+    text = str(text or "")
+    normalized = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
+def normalize_name(text: str) -> str:
+    return strip_accents(text).strip().upper()
 
 def _is_zip(path: Path) -> bool:
     # .xlsx est un ZIP (commence par 'PK\x03\x04')
@@ -36,5 +47,8 @@ def lire_tableau(path: str | Path) -> pd.DataFrame:
             f"Colonnes manquantes dans {path.name}: {missing}. "
             f"Colonnes disponibles: {list(df.columns)}"
         )
+
+    for col in ("Nom", "Prénom"):
+        df[col] = df[col].fillna("").map(normalize_name)
 
     return df[COLS_WANTED].fillna("")
