@@ -21,9 +21,9 @@ def test_build_ddn_lookup_handles_conflicts():
     ]
 
     lookup = build_ddn_lookup_from_rows(rows)
-    assert lookup[("unique", "one")] == "03/03/2000"
-    assert lookup[("dup", "test")] is None
-    assert lookup[("dupont", "alix")] == "04/04/2000"
+    assert lookup[("UNIQUE", "ONE")] == "03/03/2000"
+    assert lookup[("DUP", "TEST")] is None
+    assert lookup[("DUPONT", "ALIX")] == "04/04/2000"
 
 
 def test_import_already_printed_csv_resolves_ddn(tmp_path):
