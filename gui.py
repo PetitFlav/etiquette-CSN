@@ -132,7 +132,9 @@ class App(tk.Tk):
         ttk.Button(top, text="Réinitialiser", command=self.reset_filter).pack(side=tk.LEFT, padx=(6, 0))
     
         ttk.Button(top, text="Init DB", command=self.on_init_db).pack(side=tk.LEFT)
-        ttk.Button(top, text="Réinitialiser la base", command=self.on_reset_db).pack(side=tk.LEFT, padx=(6, 0))
+        show_reset = (self.cfg.get("show_reset_db_button") or "").strip().lower() == "true"
+        if show_reset:
+            ttk.Button(top, text="Réinitialiser la base", command=self.on_reset_db).pack(side=tk.LEFT, padx=(6, 0))
 
         mid = ttk.Frame(self)
         mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
