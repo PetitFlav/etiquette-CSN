@@ -17,13 +17,13 @@ LookupKey = tuple[str, str]
 
 
 def build_ddn_lookup_from_rows(rows: Iterable[Row]) -> dict[LookupKey, str | None]:
-    """Build a lookup ``(nom_lower, prenom_lower) -> ddn`` from imported rows."""
+    """Build a lookup ``(nom_normalized, prenom_normalized) -> ddn`` from imported rows."""
     tmp: dict[LookupKey, set[str]] = {}
     for r in rows or []:
         nom_normalized = normalize_name(str(r.get("Nom") or ""))
         prenom_normalized = normalize_name(str(r.get("Prénom") or ""))
-        nom = nom_normalized.lower()
-        prenom = prenom_normalized.lower()
+        nom = nom_normalized
+        prenom = prenom_normalized
         ddn = (str(r.get("Date_de_naissance") or "").strip())
         if not nom and not prenom:
             continue
@@ -58,6 +58,7 @@ def import_already_printed_csv(
     with csv_path.open("r", encoding="utf-8", newline="") as fh:
         reader = csv.reader(fh, delimiter=";")
         with connect_fn(db_target) as cn:  # type: ignore[call-arg]
+            cn.create_function("normalize_name", 1, normalize_name)
             for nom, prenom in reader:
                 nom = normalize_name((nom or "").strip())
                 prenom = normalize_name((prenom or "").strip())
@@ -65,13 +66,13 @@ def import_already_printed_csv(
                     skipped += 1
                     continue
 
-                key = (nom.lower(), prenom.lower())
+                key = (nom, prenom)
 
                 ddns = cn.execute(
                     """
                     SELECT DISTINCT ddn
                     FROM prints
-                    WHERE LOWER(nom)=? AND LOWER(prenom)=?
+                    WHERE normalize_name(nom)=? AND normalize_name(prenom)=?
                     """,
                     key,
                 ).fetchall()
