@@ -30,7 +30,6 @@ from src.app.config import (
 )
 from src.app.db import connect, init_db, record_print
 from src.app.imports import (
-    ValidationParseResult,
     apply_validation_updates,
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
@@ -60,7 +59,7 @@ class App(tk.Tk):
         csv_importer: Callable[[Path, str, dict[tuple[str, str], str | None] | None], tuple[int, int]] = import_already_printed_csv,
         ddn_lookup_builder: Callable[[Iterable[dict]], dict[tuple[str, str], str | None]] = build_ddn_lookup_from_rows,
         printer: Callable[..., None] = print_ql570_direct,
-        validation_parser: Callable[[Path], ValidationParseResult | list[dict]] = parse_validation_workbook,
+        validation_parser: Callable[[Path], list[dict]] = parse_validation_workbook,
         validation_merger: Callable[[Iterable[dict], Iterable[dict]], tuple[list[dict], int, int]] = apply_validation_updates,
         db_path: Path = DB_PATH,
         sorties_dir: Path = SORTIES_DIR,
@@ -555,21 +554,10 @@ class App(tk.Tk):
             return
 
         try:
-            parsed_result = self._validation_parser(Path(path))
+            validation_rows = self._validation_parser(Path(path))
         except Exception as exc:
             messagebox.showerror("Erreur", f"Import validation : {exc}")
             return
-
-        export_path: Path | None = None
-        if isinstance(parsed_result, ValidationParseResult):
-            validation_rows = parsed_result.rows
-            export_path = parsed_result.export_path
-        elif isinstance(parsed_result, tuple) and len(parsed_result) == 2:
-            validation_rows = parsed_result[0]
-            raw_path = parsed_result[1]
-            export_path = Path(raw_path) if raw_path else None
-        else:
-            validation_rows = parsed_result  # type: ignore[assignment]
 
         if not validation_rows:
             self.toast("Fichier de validation vide")
@@ -586,20 +574,11 @@ class App(tk.Tk):
         self.refresh_from_db_stats()
         self.apply_filter()
 
-        info_lines = [
-            f"{updated} ligne(s) mise(s) à jour",
-            f"{added} ligne(s) ajoutée(s)",
-        ]
-        if export_path:
-            info_lines.append(f"Fichier formaté : {export_path}")
-            self.toast(
-                f"Validation importée : {updated} mise(s) à jour, {added} ajout(s) – "
-                f"export {export_path.name}"
-            )
-        else:
-            self.toast(f"Validation importée : {updated} mise(s) à jour, {added} ajout(s)")
-
-        messagebox.showinfo("Import Validation", "\n".join(info_lines))
+        self.toast(f"Validation importée : {updated} mise(s) à jour, {added} ajout(s)")
+        messagebox.showinfo(
+            "Import Validation",
+            f"{updated} ligne(s) mise(s) à jour\n{added} ligne(s) ajoutée(s)",
+        )
 
     def refresh_from_db_stats(self):
         """Complète chaque row avec Derniere/Compteur (toutes expirations) + map per-expire."""
