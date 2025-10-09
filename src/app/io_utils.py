@@ -9,15 +9,11 @@ COLS_REQUIRED = [
     "Date_de_naissance",
     "Expire_le",
     "Email",
-]
-
 COLS_OPTIONAL = [
     "Montant",
     "ErreurValide",
 ]
-
 COLS_WANTED = COLS_REQUIRED + COLS_OPTIONAL
-
 
 def strip_accents(text: str) -> str:
     text = str(text or "")
