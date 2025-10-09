@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from src.app.db import connect, init_db, record_print
 from src.app.imports import (
+    apply_validation_updates,
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
     load_last_import,
+    parse_validation_workbook,
     persist_last_import,
 )
 from src.app.io_utils import lire_tableau
@@ -96,6 +100,78 @@ def test_import_normalizes_names(tmp_path):
         ).fetchone()
 
     assert tuple(row) == ("DUPONT", "ALIX", "01/01/2000")
+
+
+def test_parse_validation_workbook_reformats(tmp_path):
+    data = pd.DataFrame(
+        {
+            "Nom de famille": ["Dùpont", ""],
+            "Prenom": ["Élise", ""],
+            "Date naissance": [pd.Timestamp(1990, 5, 1), None],
+            "Date fin": ["2026-12-31", None],
+            "Mail": ["elise@example.com", None],
+            "Validation": ["Oui", None],
+            "Montant payé": [12.5, None],
+        }
+    )
+    path = tmp_path / "validation.xlsx"
+    data.to_excel(path, index=False)
+
+    rows = parse_validation_workbook(path)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Nom"] == "DUPONT"
+    assert row["Prénom"] == "ELISE"
+    assert row["Date_de_naissance"] == "01/05/1990"
+    assert row["Expire_le"] == "31/12/2026"
+    assert row["Email"] == "elise@example.com"
+    assert row["Montant"] == "12.5"
+    assert row["ErreurValide"] == "Oui"
+
+
+def test_apply_validation_updates_updates_and_adds():
+    existing = [
+        {
+            "Nom": "ALPHA",
+            "Prénom": "TEST",
+            "Date_de_naissance": "01/01/2000",
+            "Expire_le": "31/12/2025",
+            "Email": "",
+            "Montant": "",
+            "ErreurValide": "",
+            "Derniere": "2024-01-01T12:00:00",
+            "Compteur": 2,
+        }
+    ]
+    updates = [
+        {
+            "Nom": "Alpha",
+            "Prénom": "Test",
+            "Date_de_naissance": "01/01/2000",
+            "Email": "alpha@example.com",
+            "ErreurValide": "Yes",
+        },
+        {
+            "Nom": "Beta",
+            "Prénom": "User",
+            "Date_de_naissance": "",
+            "Expire_le": "31/12/2026",
+            "Montant": "42",
+            "ErreurValide": "No",
+        },
+    ]
+
+    merged, updated, added = apply_validation_updates(existing, updates)
+
+    assert updated == 1
+    assert added == 1
+    assert merged[0]["Email"] == "alpha@example.com"
+    assert merged[0]["ErreurValide"] == "Yes"
+    assert any(r["Nom"] == "BETA" and r["Prénom"] == "USER" for r in merged)
+    new_row = next(r for r in merged if r["Nom"] == "BETA")
+    assert new_row["Compteur"] == 0
+    assert new_row["Derniere"] == ""
 
 
 def _write_sample_csv(path: Path) -> None:

@@ -30,9 +30,11 @@ from src.app.config import (
 )
 from src.app.db import connect, init_db, record_print
 from src.app.imports import (
+    apply_validation_updates,
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
     load_last_import,
+    parse_validation_workbook,
     persist_last_import,
 )
 try:  # Compatibilité exécutable PyInstaller : l'import peut varier selon le contexte.
@@ -57,6 +59,8 @@ class App(tk.Tk):
         csv_importer: Callable[[Path, str, dict[tuple[str, str], str | None] | None], tuple[int, int]] = import_already_printed_csv,
         ddn_lookup_builder: Callable[[Iterable[dict]], dict[tuple[str, str], str | None]] = build_ddn_lookup_from_rows,
         printer: Callable[..., None] = print_ql570_direct,
+        validation_parser: Callable[[Path], list[dict]] = parse_validation_workbook,
+        validation_merger: Callable[[Iterable[dict], Iterable[dict]], tuple[list[dict], int, int]] = apply_validation_updates,
         db_path: Path = DB_PATH,
         sorties_dir: Path = SORTIES_DIR,
         default_expiration: str = DEFAULT_EXPIRATION,
@@ -70,6 +74,8 @@ class App(tk.Tk):
         self._csv_importer = csv_importer
         self._ddn_lookup_builder = ddn_lookup_builder
         self._printer = printer
+        self._validation_parser = validation_parser
+        self._validation_merger = validation_merger
         self.db_path = Path(db_path)
         self.sorties_dir = Path(sorties_dir)
         self.default_expiration = default_expiration
@@ -118,6 +124,11 @@ class App(tk.Tk):
         cb.bind("<<ComboboxSelected>>", _on_mode_change)
         
         ttk.Button(top, text="Importer CSV/Excel", command=self.on_import).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            top,
+            text="Importer Fichier Validation",
+            command=self.on_import_validation,
+        ).pack(side=tk.LEFT, padx=(6, 0))
         if self.cfg.get("backend") != "win32print":
             ttk.Button(top, text="Imprimer ZPL", command=self.on_print).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(top, text="Imprimer QL-570", command=self.on_print_ql570).pack(side=tk.LEFT, padx=(6, 0))
@@ -533,6 +544,41 @@ class App(tk.Tk):
             self._persist_last_import(Path(path))
         except Exception as e:
             messagebox.showerror("Erreur", f"Import: {e}")
+
+    def on_import_validation(self):
+        path = filedialog.askopenfilename(
+            title="Choisir un fichier de validation",
+            filetypes=[("Fichiers Excel", "*.xlsx *.xls"), ("Tous", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            validation_rows = self._validation_parser(Path(path))
+        except Exception as exc:
+            messagebox.showerror("Erreur", f"Import validation : {exc}")
+            return
+
+        if not validation_rows:
+            self.toast("Fichier de validation vide")
+            messagebox.showinfo("Info", "Le fichier ne contient aucune donnée exploitable.")
+            return
+
+        try:
+            merged_rows, updated, added = self._validation_merger(self.rows, validation_rows)
+        except Exception as exc:
+            messagebox.showerror("Erreur", f"Fusion validation : {exc}")
+            return
+
+        self.rows = merged_rows
+        self.refresh_from_db_stats()
+        self.apply_filter()
+
+        self.toast(f"Validation importée : {updated} mise(s) à jour, {added} ajout(s)")
+        messagebox.showinfo(
+            "Import Validation",
+            f"{updated} ligne(s) mise(s) à jour\n{added} ligne(s) ajoutée(s)",
+        )
 
     def refresh_from_db_stats(self):
         """Complète chaque row avec Derniere/Compteur (toutes expirations) + map per-expire."""
