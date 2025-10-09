@@ -4,7 +4,9 @@ import csv
 import json
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -23,6 +25,12 @@ except ModuleNotFoundError:  # pragma: no cover - pour l'exécutable PyInstaller
 
 Row = dict[str, object]
 LookupKey = tuple[str, str]
+
+
+@dataclass(slots=True)
+class ValidationParseResult:
+    rows: list[Row]
+    export_path: Path | None = None
 
 
 def build_ddn_lookup_from_rows(rows: Iterable[Row]) -> dict[LookupKey, str | None]:
@@ -397,6 +405,7 @@ def load_last_import() -> tuple[list[dict], dict[str, object]]:
 
 
 __all__ = [
+    "ValidationParseResult",
     "build_ddn_lookup_from_rows",
     "import_already_printed_csv",
     "persist_last_import",
