@@ -4,11 +4,9 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from openpyxl import Workbook
 
 from src.app.db import connect, init_db, record_print
 from src.app.imports import (
-    ValidationParseResult,
     apply_validation_updates,
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
@@ -106,107 +104,31 @@ def test_import_normalizes_names(tmp_path):
 
 
 def test_parse_validation_workbook_reformats(tmp_path):
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Durand Léa", "Confirmé le 01/06/2024 par Marie Curie", "", "", "", ""])
-    ws.append(["13 ans", "Donnée inutile", "", "", "", ""])
-    ws.append(["Membre", "", "", "", "", "Montant : 19,50 €"])
-    ws.append(["Inutile", "", "", "", "", "Encore"])
-    ws.append(["", "", "", "", "", ""])
-    ws.append(["Martin Paul", "", "", "", "", ""])
-    ws.append(["", "Confirmé le 02-06-2024 par Toto", "", "", "", ""])
-    ws.append(["", "", "", "", "", "Montant 20 €"])
-    ws.append(["", "Ligne en trop", "", "", "", ""])
-
-    ws["A1"].hyperlink = "https://example.com"
-    ws["A1"].style = "Hyperlink"
-    ws["A6"].hyperlink = "https://example.com/member"
-    ws["A6"].style = "Hyperlink"
-
+    data = pd.DataFrame(
+        {
+            "Nom de famille": ["Dùpont", ""],
+            "Prenom": ["Élise", ""],
+            "Date naissance": [pd.Timestamp(1990, 5, 1), None],
+            "Date fin": ["2026-12-31", None],
+            "Mail": ["elise@example.com", None],
+            "Validation": ["Oui", None],
+            "Montant payé": [12.5, None],
+        }
+    )
     path = tmp_path / "validation.xlsx"
-    wb.save(path)
+    data.to_excel(path, index=False)
 
-    result = parse_validation_workbook(path, export_dir=tmp_path, now=datetime(2024, 6, 7, 15, 30))
+    rows = parse_validation_workbook(path)
 
-    assert isinstance(result, ValidationParseResult)
-    assert len(result.rows) == 2
-
-    first, second = result.rows
-    assert first["Nom"] == "DURAND"
-    assert first["Prénom"] == "LEA"
-    assert first["Montant"] == "19.50"
-    assert first["Validation_confirmee_le"] == "01/06/2024"
-    assert first["Validation_confirmee_par"] == "MARIE CURIE"
-
-    assert second["Nom"] == "MARTIN"
-    assert second["Prénom"] == "PAUL"
-    assert second["Montant"] == "20.00"
-    assert second["Validation_confirmee_le"] == "02/06/2024"
-    assert second["Validation_confirmee_par"] == "TOTO"
-
-    assert result.export_path is not None
-    assert result.export_path.name == "FichierValidation_20240607-153000.xlsx"
-    exported = pd.read_excel(result.export_path)
-    assert exported.shape[0] == 2
-    assert list(exported.columns) == [
-        "Nom",
-        "Prénom",
-        "Date_de_naissance",
-        "Expire_le",
-        "Email",
-        "Montant",
-        "ErreurValide",
-        "Validation_confirmee_le",
-        "Validation_confirmee_par",
-    ]
-
-
-def test_parse_validation_workbook_handles_multiline_blocks(tmp_path):
-    data = [
-        ["CARDON Elise", "Confirmé le 01/06/2024 par AUBER Yann", "", "", "", ""],
-        ["13 ans", "", "", "", "", ""],
-        ["Membre", "", "", "", "", "Montant : 19,50 €"],
-        ["Donnée inutile", "", "", "", "", "Ignorer"],
-        ["", "", "", "", "", ""],
-        ["DUPONT Marc", "", "", "", "", ""],
-        ["", "Confirmé le 02-06-2024 par BOB Martin", "", "", "", ""],
-        ["Membre", "", "", "", "", "Montant 20 €"],
-    ]
-    path = tmp_path / "validation_raw.xlsx"
-    pd.DataFrame(data).to_excel(path, index=False, header=False)
-
-    result = parse_validation_workbook(path, export_dir=tmp_path, now=datetime(2024, 6, 7, 8, 15))
-
-    assert isinstance(result, ValidationParseResult)
-    assert len(result.rows) == 2
-
-    first, second = result.rows
-    assert first["Nom"] == "CARDON"
-    assert first["Prénom"] == "ELISE"
-    assert first["Montant"] == "19.50"
-    assert first["Validation_confirmee_le"] == "01/06/2024"
-    assert first["Validation_confirmee_par"] == "AUBER YANN"
-
-    assert second["Nom"] == "DUPONT"
-    assert second["Prénom"] == "MARC"
-    assert second["Montant"] == "20.00"
-    assert second["Validation_confirmee_par"] == "BOB MARTIN"
-
-    assert result.export_path is not None
-    assert result.export_path.name == "FichierValidation_20240607-081500.xlsx"
-    exported = pd.read_excel(result.export_path)
-    assert exported.shape[0] == 2
-    assert list(exported.columns) == [
-        "Nom",
-        "Prénom",
-        "Date_de_naissance",
-        "Expire_le",
-        "Email",
-        "Montant",
-        "ErreurValide",
-        "Validation_confirmee_le",
-        "Validation_confirmee_par",
-    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Nom"] == "DUPONT"
+    assert row["Prénom"] == "ELISE"
+    assert row["Date_de_naissance"] == "01/05/1990"
+    assert row["Expire_le"] == "31/12/2026"
+    assert row["Email"] == "elise@example.com"
+    assert row["Montant"] == "12.5"
+    assert row["ErreurValide"] == "Oui"
 
 
 def test_apply_validation_updates_updates_and_adds():
@@ -219,8 +141,6 @@ def test_apply_validation_updates_updates_and_adds():
             "Email": "",
             "Montant": "",
             "ErreurValide": "",
-            "Validation_confirmee_le": "",
-            "Validation_confirmee_par": "",
             "Derniere": "2024-01-01T12:00:00",
             "Compteur": 2,
         }
@@ -231,9 +151,9 @@ def test_apply_validation_updates_updates_and_adds():
             "Prénom": "Test",
             "Date_de_naissance": "01/01/2000",
             "Email": "alpha@example.com",
+            "Montant": "42",
+            "Expire_le": "31/12/2025",
             "ErreurValide": "Yes",
-            "Validation_confirmee_le": "02/02/2024",
-            "Validation_confirmee_par": "VALIDATOR",
         },
         {
             "Nom": "Beta",
@@ -242,8 +162,6 @@ def test_apply_validation_updates_updates_and_adds():
             "Expire_le": "31/12/2026",
             "Montant": "42",
             "ErreurValide": "No",
-            "Validation_confirmee_le": "03/03/2024",
-            "Validation_confirmee_par": "CHECKER",
         },
     ]
 
@@ -252,14 +170,44 @@ def test_apply_validation_updates_updates_and_adds():
     assert updated == 1
     assert added == 1
     assert merged[0]["Email"] == "alpha@example.com"
-    assert merged[0]["ErreurValide"] == "Yes"
-    assert merged[0]["Validation_confirmee_le"] == "02/02/2024"
-    assert merged[0]["Validation_confirmee_par"] == "VALIDATOR"
+    assert merged[0]["Montant"] == "42"
+    assert merged[0]["ErreurValide"] == "true"
     assert any(r["Nom"] == "BETA" and r["Prénom"] == "USER" for r in merged)
     new_row = next(r for r in merged if r["Nom"] == "BETA")
     assert new_row["Compteur"] == 0
     assert new_row["Derniere"] == ""
-    assert new_row["Validation_confirmee_par"] == "CHECKER"
+
+
+def test_apply_validation_updates_marks_error_when_expire_differs():
+    existing = [
+        {
+            "Nom": "ALPHA",
+            "Prénom": "TEST",
+            "Date_de_naissance": "01/01/2000",
+            "Expire_le": "31/12/2025",
+            "Email": "",
+            "Montant": "",
+            "ErreurValide": "",
+            "Derniere": "",
+            "Compteur": 0,
+        }
+    ]
+    updates = [
+        {
+            "Nom": "Alpha",
+            "Prénom": "Test",
+            "Date_de_naissance": "01/01/2000",
+            "Expire_le": "30/11/2025",
+            "Montant": "15",
+        }
+    ]
+
+    merged, updated, added = apply_validation_updates(existing, updates)
+
+    assert updated == 1
+    assert added == 0
+    assert merged[0]["Montant"] == "15"
+    assert merged[0]["ErreurValide"] == "false"
 
 
 def _write_sample_csv(path: Path) -> None:
