@@ -2,24 +2,45 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
+
+import pandas as pd
+from openpyxl import load_workbook
 
 from .config import DB_PATH, LAST_IMPORT_DIR, LAST_IMPORT_METADATA
 from .db import connect, record_print
 try:
-    from .io_utils import lire_tableau, normalize_name
+    from .io_utils import lire_tableau, normalize_name, strip_accents
 except ModuleNotFoundError:  # pragma: no cover - pour l'exécutable PyInstaller
     try:
-        from io_utils import lire_tableau, normalize_name  # type: ignore
+        from io_utils import lire_tableau, normalize_name, strip_accents  # type: ignore
     except ModuleNotFoundError:  # pragma: no cover - repli final
-        from app.io_utils import lire_tableau, normalize_name  # type: ignore
+        from app.io_utils import lire_tableau, normalize_name, strip_accents  # type: ignore
 
 
 Row = dict[str, object]
 LookupKey = tuple[str, str]
+
+
+@dataclass(slots=True)
+class _CellValue:
+    """Representation of a worksheet cell with optional hyperlink metadata."""
+
+    text: str
+    raw: str
+    hyperlink: bool = False
+
+
+@dataclass(slots=True)
+class ValidationParseResult:
+    rows: list[Row]
+    export_path: Path | None = None
 
 
 def build_ddn_lookup_from_rows(rows: Iterable[Row]) -> dict[LookupKey, str | None]:
@@ -100,6 +121,677 @@ def import_already_printed_csv(
     return (imported, skipped)
 
 
+def _normalize_header_label(label: object) -> str:
+    raw = str(label or "").strip()
+    if not raw:
+        return ""
+    normalized = strip_accents(raw).lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+_VALIDATION_HEADER_MAP: dict[str, str] = {
+    "nom": "Nom",
+    "nom usage": "Nom",
+    "nom de famille": "Nom",
+    "prenom": "Prénom",
+    "prénom": "Prénom",
+    "prenom usuel": "Prénom",
+    "prenom usage": "Prénom",
+    "date de naissance": "Date_de_naissance",
+    "date naissance": "Date_de_naissance",
+    "date_naissance": "Date_de_naissance",
+    "ddn": "Date_de_naissance",
+    "date naissance ddn": "Date_de_naissance",
+    "expire le": "Expire_le",
+    "date de fin": "Expire_le",
+    "date fin": "Expire_le",
+    "date expiration": "Expire_le",
+    "expiration": "Expire_le",
+    "date limite": "Expire_le",
+    "courriel": "Email",
+    "email": "Email",
+    "mail": "Email",
+    "adresse mail": "Email",
+    "adresse email": "Email",
+    "montant": "Montant",
+    "montant regle": "Montant",
+    "montant payé": "Montant",
+    "montant paye": "Montant",
+    "montant verse": "Montant",
+    "validation": "ErreurValide",
+    "erreur valide": "ErreurValide",
+    "erreur validée": "ErreurValide",
+    "erreur valider": "ErreurValide",
+    "valide": "ErreurValide",
+    "erreur ok": "ErreurValide",
+}
+
+
+def _format_validation_date(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() == "nat":
+            return ""
+        normalized = text.replace("\u00a0", " ").strip()
+        normalized_slash = normalized.replace(".", "/").replace("-", "/")
+        if re.fullmatch(r"\d{2}/\d{2}/\d{4}", normalized_slash):
+            parsed = pd.to_datetime(normalized_slash, format="%d/%m/%Y", errors="coerce")
+        elif re.fullmatch(r"\d{4}/\d{2}/\d{2}", normalized_slash):
+            parsed = pd.to_datetime(normalized_slash, format="%Y/%m/%d", errors="coerce")
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+            parsed = pd.to_datetime(normalized, format="%Y-%m-%d", errors="coerce")
+        elif re.fullmatch(r"\d{2}-\d{2}-\d{4}", normalized):
+            parsed = pd.to_datetime(normalized, format="%d-%m-%Y", errors="coerce")
+        else:
+            try:
+                parsed = pd.to_datetime(normalized, dayfirst=True, errors="coerce")
+            except Exception:
+                parsed = pd.NaT
+        if pd.isna(parsed):
+            return text
+        return parsed.strftime("%d/%m/%Y")
+    try:
+        parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
+    except Exception:
+        parsed = pd.NaT
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%d/%m/%Y")
+
+
+def _extract_amount(value: object) -> str:
+    raw = _to_clean_string(value)
+    if not raw:
+        return ""
+
+    normalized = raw.replace("\u00a0", " ").replace("€", "").replace(",", ".")
+    match = re.search(r"(\d+(?:[\s\.]\d{3})*(?:\.\d+)?)", normalized)
+    if not match:
+        return ""
+
+    number = match.group(1).replace(" ", "")
+    try:
+        value_decimal = Decimal(number)
+    except InvalidOperation:
+        return number
+
+    return f"{value_decimal.quantize(Decimal('0.01'))}"
+
+
+def _extract_hyperlink_text(cell: object) -> str:
+    """Return the display text for hyperlink-like formulas or hyperlink cells."""
+
+    if isinstance(cell, _CellValue):
+        if cell.hyperlink and cell.text:
+            return cell.text.strip()
+        raw_source = cell.raw
+        fallback = cell.text
+    else:
+        raw_source = str(cell or "")
+        fallback = raw_source
+
+    raw_text = str(raw_source or "").strip()
+    if not raw_text:
+        return ""
+
+    match = re.search(
+        r"=(?:HYPERLINK|LIEN_HYPERTEXTE)\s*\((.*)\)",
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return str(fallback or raw_text).strip()
+
+    args = match.group(1)
+    quoted = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', args)
+    if quoted:
+        return quoted[-1]
+
+    # Fallback: split arguments on ';' or ',' and take the last one
+    for separator in (";", ","):
+        if separator in args:
+            candidate = args.split(separator)[-1].strip()
+            return candidate.strip('"')
+
+    return str(fallback or raw_text).strip()
+
+
+def _looks_like_member_name(cell: object) -> bool:
+    hyperlink = isinstance(cell, _CellValue) and cell.hyperlink
+    raw_text = _to_clean_string(cell)
+    text = _extract_hyperlink_text(cell)
+    if not text:
+        return False
+
+    normalized = strip_accents(text).upper()
+    if normalized in {"NOM", "PRENOM", "PRÉNOM", "MEMBRE", "STATUT"}:
+        return False
+    if normalized.startswith("TOTAL"):
+        return False
+    if re.search(r"\badhesion\b", normalized, re.IGNORECASE):
+        return False
+    if re.match(r"^\d", text):
+        return False
+    tokens = [tok for tok in re.split(r"\s+", text.strip()) if tok]
+    if len(tokens) < 2:
+        return False
+
+    if hyperlink:
+        return True
+
+    if raw_text.lstrip().startswith("="):
+        return True
+
+    first = tokens[0]
+    if not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", first):
+        return False
+
+    second = tokens[1]
+    if not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", second):
+        return False
+
+    if not hyperlink and not raw_text.lstrip().startswith("="):
+        if not second[:1].isalpha() or not second[:1].isupper():
+            return False
+
+    return True
+
+
+_NAME_CONNECTORS = {
+    "DE",
+    "DES",
+    "DU",
+    "D",
+    "LE",
+    "LA",
+    "LES",
+    "L",
+    "ST",
+    "STE",
+    "SAINT",
+    "SAINTE",
+}
+
+
+def _split_name_parts(cell: object) -> tuple[str, str]:
+    cleaned = _extract_hyperlink_text(cell)
+    cleaned = _to_clean_string(cleaned)
+    if not cleaned:
+        return ("", "")
+
+    first_line = cleaned.splitlines()[0].strip()
+    tokens = [tok for tok in re.split(r"\s+", first_line) if tok]
+    if not tokens:
+        return ("", "")
+
+    surname_tokens: list[str] = []
+    first_name_tokens: list[str] = []
+
+    for idx, token in enumerate(tokens):
+        ascii_token = strip_accents(token).replace("'", "").upper()
+        if not surname_tokens:
+            surname_tokens.append(token)
+            continue
+
+        if ascii_token in _NAME_CONNECTORS:
+            surname_tokens.append(token)
+            continue
+
+        first_name_tokens = tokens[idx:]
+        break
+
+    if not first_name_tokens and surname_tokens:
+        first_name_tokens = [surname_tokens.pop()]
+
+    surname = normalize_name(" ".join(surname_tokens).strip()) if surname_tokens else ""
+    firstname = normalize_name(" ".join(first_name_tokens).strip()) if first_name_tokens else ""
+    return (surname, firstname)
+
+
+def _extract_confirmation_date(text: str) -> str:
+    cleaned = _to_clean_string(text)
+    if not cleaned:
+        return ""
+
+    normalized = cleaned.replace("\u00a0", " ")
+    patterns = [
+        (r"\d{2}/\d{2}/\d{4}", "%d/%m/%Y"),
+        (r"\d{2}-\d{2}-\d{4}", "%d-%m-%Y"),
+        (r"\d{4}-\d{2}-\d{2}", "%Y-%m-%d"),
+        (r"\d{4}/\d{2}/\d{2}", "%Y/%m/%d"),
+    ]
+    for pattern, fmt in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        candidate = match.group(0)
+        parsed = pd.to_datetime(candidate, format=fmt, errors="coerce")
+        if pd.isna(parsed):
+            continue
+        return parsed.strftime("%d/%m/%Y")
+
+    try:
+        parsed = pd.to_datetime(normalized, dayfirst=True, errors="coerce")
+    except Exception:
+        parsed = pd.NaT
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%d/%m/%Y")
+
+
+def _extract_confirmation_person(text: str) -> str:
+    cleaned = _to_clean_string(text)
+    if not cleaned:
+        return ""
+
+    match = re.search(r"par\s+([^\d,;]+)", cleaned, flags=re.IGNORECASE)
+    if not match:
+        return ""
+
+    person = match.group(1)
+    person = re.split(r"\b(valide|validée|validé|non fourni)\b", person, flags=re.IGNORECASE)[0]
+    person = person.split("(")[0]
+    person = re.split(r"\s{2,}", person)[0]
+    person = person.replace("\u00a0", " ")
+    person = re.sub(r"[,;].*", "", person).strip()
+    return normalize_name(person)
+
+
+def _parse_validation_columnar(df: pd.DataFrame) -> list[Row]:
+    if df.empty:
+        return []
+
+    column_lookup: dict[str, str] = {}
+    for column in df.columns:
+        normalized = _normalize_header_label(column)
+        if not normalized:
+            continue
+        target = _VALIDATION_HEADER_MAP.get(normalized)
+        if target and target not in column_lookup:
+            column_lookup[target] = column
+
+    required = ["Nom", "Prénom"]
+    missing = [col for col in required if col not in column_lookup]
+    if missing:
+        available = list(df.columns)
+        raise ValueError(
+            f"Colonnes manquantes: {missing}. Colonnes disponibles: {available}"
+        )
+
+    selected_columns: dict[str, str] = {target: column_lookup[target] for target in column_lookup}
+    df = df.rename(columns={orig: target for target, orig in selected_columns.items()})
+    df = df[list(selected_columns.keys())]
+
+    for optional in ("Date_de_naissance", "Expire_le", "Email", "Montant", "ErreurValide"):
+        if optional not in df.columns:
+            df[optional] = ""
+
+    df = df[
+        [
+            "Nom",
+            "Prénom",
+            "Date_de_naissance",
+            "Expire_le",
+            "Email",
+            "Montant",
+            "ErreurValide",
+        ]
+    ]
+
+    df["Nom"] = df["Nom"].map(_to_clean_string).map(normalize_name)
+    df["Prénom"] = df["Prénom"].map(_to_clean_string).map(normalize_name)
+    df["Date_de_naissance"] = df["Date_de_naissance"].map(_format_validation_date)
+    df["Expire_le"] = df["Expire_le"].map(_format_validation_date)
+    df["Email"] = df["Email"].map(_to_clean_string)
+    df["Montant"] = df["Montant"].map(_to_clean_string)
+    df["ErreurValide"] = df["ErreurValide"].map(_to_clean_string)
+
+    df = df[(df["Nom"].str.strip() != "") | (df["Prénom"].str.strip() != "")]
+
+    rows = df.to_dict(orient="records")
+    for row in rows:
+        row.setdefault("Validation_confirmee_le", "")
+        row.setdefault("Validation_confirmee_par", "")
+    return rows
+
+
+def _build_row_from_block(block: list[list[_CellValue]]) -> Row | None:
+    if not block:
+        return None
+
+    trimmed = block[:3]
+    name_line = trimmed[0][0] if trimmed and trimmed[0] else _CellValue("", "", False)
+    nom, prenom = _split_name_parts(name_line)
+
+    montant_cell: object = ""
+    if len(trimmed) >= 3 and len(trimmed[2]) > 5:
+        montant_cell = trimmed[2][5]
+    montant = _extract_amount(montant_cell)
+
+    confirm_cells: list[str] = []
+    for line in trimmed:
+        if len(line) <= 1:
+            continue
+        cell = line[1]
+        cell_text = _to_clean_string(cell)
+        if cell_text and re.search(r"confirm", cell_text, flags=re.IGNORECASE):
+            confirm_cells.append(cell_text)
+    confirm_text = " ".join(confirm_cells)
+    confirmation_date = _extract_confirmation_date(confirm_text)
+    confirmation_person = _extract_confirmation_person(confirm_text)
+
+    if not any([nom, prenom, montant, confirmation_date, confirmation_person]):
+        return None
+
+    return {
+        "Nom": nom,
+        "Prénom": prenom,
+        "Date_de_naissance": "",
+        "Expire_le": "",
+        "Email": "",
+        "Montant": montant,
+        "ErreurValide": "",
+        "Validation_confirmee_le": confirmation_date,
+        "Validation_confirmee_par": confirmation_person,
+    }
+
+
+def _read_validation_rows(path: Path) -> list[list[_CellValue]]:
+    """Load raw worksheet values preserving formulas and hyperlink metadata."""
+
+    try:
+        wb = load_workbook(path, data_only=False, read_only=True)
+    except Exception:
+        if path.suffix.lower() == ".xls":
+            try:
+                import xlrd  # type: ignore
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError("xlrd requis pour lire les fichiers .xls") from exc
+
+            book = xlrd.open_workbook(path, formatting_info=False)
+            sheet = book.sheet_by_index(0)
+            rows: list[list[_CellValue]] = []
+            for rx in range(sheet.nrows):
+                values: list[_CellValue] = []
+                for cx in range(sheet.ncols):
+                    cell = sheet.cell(rx, cx)
+                    value = cell.value
+                    text = "" if value in (None, "") else str(value)
+                    values.append(_CellValue(text=text, raw=text, hyperlink=False))
+                rows.append(values)
+            return rows
+        raise
+
+    try:
+        ws = wb.active
+        rows: list[list[_CellValue]] = []
+        for row in ws.iter_rows(values_only=False):
+            values: list[_CellValue] = []
+            for cell in row:
+                if cell is None:
+                    values.append(_CellValue(text="", raw="", hyperlink=False))
+                    continue
+
+                display = cell.value
+                text = "" if display is None else str(display)
+                raw_text = text
+                hyperlink = False
+
+                if getattr(cell, "data_type", None) == "f" and isinstance(cell.value, str):
+                    raw_text = cell.value
+
+                hyperlink_obj = getattr(cell, "hyperlink", None)
+                if hyperlink_obj is not None:
+                    hyperlink = True
+                    if not raw_text.lstrip().startswith("="):
+                        target = getattr(hyperlink_obj, "target", "") or ""
+                        raw_text = f'=HYPERLINK("{target}", "{text}")'
+
+                values.append(_CellValue(text=text, raw=raw_text, hyperlink=hyperlink))
+            rows.append(values)
+    finally:
+        wb.close()
+
+    return rows
+
+
+def _parse_validation_multiline(raw_rows: Sequence[Sequence[_CellValue]]) -> list[Row]:
+    if not raw_rows:
+        return []
+
+    rows: list[Row] = []
+    current_block: list[list[_CellValue]] = []
+    current_name_key: str | None = None
+
+    def _flush(block: list[list[_CellValue]]) -> None:
+        if not block:
+            return
+        trimmed_block = block[:3]
+        row = _build_row_from_block(trimmed_block)
+        if row:
+            rows.append(row)
+
+    def _name_key(cell: _CellValue) -> str:
+        text = _extract_hyperlink_text(cell)
+        text = _to_clean_string(text)
+        if not text:
+            return ""
+        return strip_accents(text).upper()
+
+    for raw in raw_rows:
+        cells = [cell if isinstance(cell, _CellValue) else _CellValue(text=_to_clean_string(cell), raw=_to_clean_string(cell), hyperlink=False) for cell in raw]
+        values = [_to_clean_string(cell) for cell in cells]
+        if not any(values):
+            _flush(current_block)
+            current_block = []
+            current_name_key = None
+            continue
+
+        first_cell = cells[0] if cells else _CellValue("", "", False)
+        is_member = _looks_like_member_name(first_cell)
+        is_hyperlink = isinstance(first_cell, _CellValue) and first_cell.hyperlink
+
+        name_key = _name_key(first_cell) if isinstance(first_cell, _CellValue) else ""
+        new_member = False
+
+        if is_member:
+            if not current_block:
+                new_member = True
+            elif is_hyperlink:
+                new_member = True
+            elif current_name_key and name_key and name_key != current_name_key:
+                new_member = True
+
+        if new_member:
+            _flush(current_block)
+            current_block = [cells]
+            current_name_key = name_key or None
+            continue
+
+        if is_member and not current_block:
+            current_block = [cells]
+            current_name_key = name_key or None
+            continue
+
+        if current_block:
+            current_block.append(cells)
+        elif is_member:
+            current_block = [cells]
+            current_name_key = name_key or None
+
+    _flush(current_block)
+    return rows
+
+
+def _write_validation_export(rows: list[Row], *, export_dir: Path, now: datetime) -> Path:
+    export_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = now.strftime("%Y%m%d-%H%M%S")
+    export_path = export_dir / f"FichierValidation_{timestamp}.xlsx"
+
+    desired_columns = [
+        "Nom",
+        "Prénom",
+        "Date_de_naissance",
+        "Expire_le",
+        "Email",
+        "Montant",
+        "ErreurValide",
+        "Validation_confirmee_le",
+        "Validation_confirmee_par",
+    ]
+
+    df = pd.DataFrame(rows)
+    for col in desired_columns:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[desired_columns]
+    df.to_excel(export_path, index=False)
+    return export_path
+
+
+def parse_validation_workbook(
+    path: Path | str,
+    *,
+    export_dir: Path | None = None,
+    now: datetime | None = None,
+) -> ValidationParseResult:
+    """Read a validation workbook and normalise its content."""
+
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(f"Fichier introuvable: {source}")
+
+    try:
+        df = pd.read_excel(source, dtype=object)
+    except ValueError:
+        df = pd.read_excel(source, dtype=object, engine="xlrd")
+    except Exception as exc:  # pragma: no cover - depends on pandas backends
+        raise RuntimeError(f"Import validation: échec lecture {source.name} → {exc}") from exc
+
+    raw_rows = _read_validation_rows(source)
+    rows = _parse_validation_multiline(raw_rows)
+
+    if not rows:
+        try:
+            rows = _parse_validation_columnar(df)
+        except ValueError:
+            rows = []
+
+    if not rows:
+        return ValidationParseResult([], None)
+
+    export_path = _write_validation_export(
+        rows,
+        export_dir=export_dir or source.parent,
+        now=now or datetime.now(),
+    )
+
+    return ValidationParseResult(rows, export_path)
+
+
+def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tuple[list[Row], int, int]:
+    """Merge validation ``updates`` into ``rows``.
+
+    ``rows`` is typically the dataset currently loaded in the GUI. The function
+    returns the updated list along with the number of modified rows and the
+    number of new entries that were added.
+    """
+
+    rows_list: list[Row] = [dict(row) for row in (rows or [])]
+    updated, added = 0, 0
+
+    def _norm(value: object) -> str:
+        return normalize_name(str(value or ""))
+
+    for update in updates or []:
+        nom = _norm(update.get("Nom"))
+        prenom = _norm(update.get("Prénom"))
+        if not nom and not prenom:
+            continue
+
+        ddn_update = str(update.get("Date_de_naissance") or "").strip()
+
+        target_index = None
+        for idx, row in enumerate(rows_list):
+            if _norm(row.get("Nom")) != nom:
+                continue
+            if _norm(row.get("Prénom")) != prenom:
+                continue
+            ddn_existing = str(row.get("Date_de_naissance") or "").strip()
+            if ddn_update and ddn_existing and ddn_existing != ddn_update:
+                continue
+            target_index = idx
+            break
+
+        if target_index is None:
+            new_row: Row = {
+                "Nom": nom,
+                "Prénom": prenom,
+                "Date_de_naissance": ddn_update,
+                "Expire_le": str(update.get("Expire_le") or "").strip(),
+                "Email": str(update.get("Email") or "").strip(),
+                "Montant": str(update.get("Montant") or "").strip(),
+                "ErreurValide": str(update.get("ErreurValide") or "").strip(),
+                "Validation_confirmee_le": str(update.get("Validation_confirmee_le") or "").strip(),
+                "Validation_confirmee_par": str(update.get("Validation_confirmee_par") or "").strip(),
+                "Derniere": "",
+                "Compteur": 0,
+            }
+            rows_list.append(new_row)
+            added += 1
+            continue
+
+        row = rows_list[target_index]
+        changed = False
+
+        if row.get("Nom") != nom:
+            row["Nom"] = nom
+            changed = True
+        if row.get("Prénom") != prenom:
+            row["Prénom"] = prenom
+            changed = True
+
+        for key in (
+            "Date_de_naissance",
+            "Expire_le",
+            "Email",
+            "Montant",
+            "ErreurValide",
+            "Validation_confirmee_le",
+            "Validation_confirmee_par",
+        ):
+            value = update.get(key)
+            if value is None:
+                continue
+            value_str = str(value).strip()
+            if not value_str:
+                continue
+            if str(row.get(key) or "").strip() != value_str:
+                row[key] = value_str
+                changed = True
+
+        if changed:
+            updated += 1
+
+    return rows_list, updated, added
+
+
+def _to_clean_string(value: object) -> str:
+    if isinstance(value, _CellValue):
+        return str(value.text or "").strip()
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):  # type: ignore[arg-type]
+            return ""
+    except TypeError:
+        pass
+    return str(value).strip()
+
+
 def persist_last_import(source: Path) -> dict[str, object]:
     """Cache the latest imported file and return the stored metadata."""
 
@@ -150,8 +842,11 @@ def load_last_import() -> tuple[list[dict], dict[str, object]]:
 
 
 __all__ = [
+    "ValidationParseResult",
     "build_ddn_lookup_from_rows",
     "import_already_printed_csv",
     "persist_last_import",
     "load_last_import",
+    "parse_validation_workbook",
+    "apply_validation_updates",
 ]
