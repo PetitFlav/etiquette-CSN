@@ -3,16 +3,17 @@ from pathlib import Path
 import unicodedata
 import pandas as pd
 
-COLS_WANTED = [
+COLS_REQUIRED = [
     "Nom",
     "Prénom",
     "Date_de_naissance",
     "Expire_le",
     "Email",
+COLS_OPTIONAL = [
     "Montant",
     "ErreurValide",
 ]
-
+COLS_WANTED = COLS_REQUIRED + COLS_OPTIONAL
 
 def strip_accents(text: str) -> str:
     text = str(text or "")
@@ -53,12 +54,16 @@ def lire_tableau(path: str | Path) -> pd.DataFrame:
     }
     df = df.rename(columns=mapping)
 
-    missing = [c for c in COLS_WANTED if c not in df.columns]
+    missing = [c for c in COLS_REQUIRED if c not in df.columns]
     if missing:
         raise ValueError(
             f"Colonnes manquantes dans {path.name}: {missing}. "
             f"Colonnes disponibles: {list(df.columns)}"
         )
+
+    for optional_col in COLS_OPTIONAL:
+        if optional_col not in df.columns:
+            df[optional_col] = ""
 
     for col in ("Nom", "Prénom"):
         df[col] = df[col].fillna("").map(normalize_name)
