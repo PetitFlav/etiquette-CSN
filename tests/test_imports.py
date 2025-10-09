@@ -151,6 +151,8 @@ def test_apply_validation_updates_updates_and_adds():
             "Prénom": "Test",
             "Date_de_naissance": "01/01/2000",
             "Email": "alpha@example.com",
+            "Montant": "42",
+            "Expire_le": "31/12/2025",
             "ErreurValide": "Yes",
         },
         {
@@ -168,11 +170,44 @@ def test_apply_validation_updates_updates_and_adds():
     assert updated == 1
     assert added == 1
     assert merged[0]["Email"] == "alpha@example.com"
-    assert merged[0]["ErreurValide"] == "Yes"
+    assert merged[0]["Montant"] == "42"
+    assert merged[0]["ErreurValide"] == "true"
     assert any(r["Nom"] == "BETA" and r["Prénom"] == "USER" for r in merged)
     new_row = next(r for r in merged if r["Nom"] == "BETA")
     assert new_row["Compteur"] == 0
     assert new_row["Derniere"] == ""
+
+
+def test_apply_validation_updates_marks_error_when_expire_differs():
+    existing = [
+        {
+            "Nom": "ALPHA",
+            "Prénom": "TEST",
+            "Date_de_naissance": "01/01/2000",
+            "Expire_le": "31/12/2025",
+            "Email": "",
+            "Montant": "",
+            "ErreurValide": "",
+            "Derniere": "",
+            "Compteur": 0,
+        }
+    ]
+    updates = [
+        {
+            "Nom": "Alpha",
+            "Prénom": "Test",
+            "Date_de_naissance": "01/01/2000",
+            "Expire_le": "30/11/2025",
+            "Montant": "15",
+        }
+    ]
+
+    merged, updated, added = apply_validation_updates(existing, updates)
+
+    assert updated == 1
+    assert added == 0
+    assert merged[0]["Montant"] == "15"
+    assert merged[0]["ErreurValide"] == "false"
 
 
 def _write_sample_csv(path: Path) -> None:

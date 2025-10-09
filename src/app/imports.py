@@ -281,6 +281,16 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
     def _norm(value: object) -> str:
         return normalize_name(str(value or ""))
 
+    def _normalize_erreur_valide_flag(value: object) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        text = str(value or "").strip().lower()
+        if text in {"true", "yes", "1", "y", "oui"}:
+            return "true"
+        if text in {"false", "no", "0", "n", "non"}:
+            return "false"
+        return ""
+
     for update in updates or []:
         nom = _norm(update.get("Nom"))
         prenom = _norm(update.get("Prénom"))
@@ -288,6 +298,8 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
             continue
 
         ddn_update = str(update.get("Date_de_naissance") or "").strip()
+        expire_update = str(update.get("Expire_le") or "").strip()
+        montant_update = str(update.get("Montant") or "").strip()
 
         target_index = None
         for idx, row in enumerate(rows_list):
@@ -320,6 +332,8 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
         row = rows_list[target_index]
         changed = False
 
+        expire_existing = str(row.get("Expire_le") or "").strip()
+
         if row.get("Nom") != nom:
             row["Nom"] = nom
             changed = True
@@ -327,7 +341,7 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
             row["Prénom"] = prenom
             changed = True
 
-        for key in ("Date_de_naissance", "Expire_le", "Email", "Montant", "ErreurValide"):
+        for key in ("Date_de_naissance", "Expire_le", "Email"):
             value = update.get(key)
             if value is None:
                 continue
@@ -336,6 +350,21 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
                 continue
             if str(row.get(key) or "").strip() != value_str:
                 row[key] = value_str
+                changed = True
+
+        if montant_update:
+            if str(row.get("Montant") or "").strip() != montant_update:
+                row["Montant"] = montant_update
+                changed = True
+
+        if expire_update:
+            if expire_existing and expire_existing != expire_update:
+                desired_flag = "false"
+            else:
+                desired_flag = "true"
+            current_flag = _normalize_erreur_valide_flag(row.get("ErreurValide"))
+            if current_flag != desired_flag:
+                row["ErreurValide"] = desired_flag
                 changed = True
 
         if changed:
