@@ -9,6 +9,7 @@ from src.app.imports import (
     load_last_import,
     persist_last_import,
 )
+from src.app.io_utils import lire_tableau
 
 
 def test_build_ddn_lookup_handles_conflicts():
@@ -100,10 +101,39 @@ def test_import_normalizes_names(tmp_path):
 def _write_sample_csv(path: Path) -> None:
     path.write_text(
         "Ignoré\nIgnoré\nIgnoré\n"
-        "Nom,Prénom,Date_de_naissance,Expire_le\n"
-        "Alpha,Test,01/01/2000,31/12/2025\n",
+        "Nom,Prénom,Date_de_naissance,Expire_le,Email,Montant,ErreurValide\n"
+        "Alpha,Test,01/01/2000,31/12/2025,alpha@example.com,123.45,Yes\n",
         encoding="utf-8",
     )
+
+
+def _write_csv_without_optional_columns(path: Path) -> None:
+    path.write_text(
+        "Ignoré\nIgnoré\nIgnoré\n"
+        "Nom,Prénom,Date_de_naissance,Expire_le,Email\n"
+        "Beta,User,02/02/2002,31/12/2025,beta@example.com\n",
+        encoding="utf-8",
+    )
+
+
+def test_lire_tableau_adds_missing_optional_columns(tmp_path):
+    sample = tmp_path / "import.csv"
+    _write_csv_without_optional_columns(sample)
+
+    df = lire_tableau(sample)
+
+    assert list(df.columns) == [
+        "Nom",
+        "Prénom",
+        "Date_de_naissance",
+        "Expire_le",
+        "Email",
+        "Montant",
+        "ErreurValide",
+    ]
+    assert df.iloc[0]["Nom"] == "BETA"
+    assert df.iloc[0]["Montant"] == ""
+    assert df.iloc[0]["ErreurValide"] == ""
 
 
 def test_persist_and_load_last_import(tmp_path, monkeypatch):
@@ -130,4 +160,7 @@ def test_persist_and_load_last_import(tmp_path, monkeypatch):
 
     assert len(rows) == 1
     assert rows[0]["Nom"] == "ALPHA"
+    assert rows[0]["Email"] == "alpha@example.com"
+    assert rows[0]["Montant"] == "123.45"
+    assert rows[0]["ErreurValide"] == "Yes"
     assert loaded_metadata["cached_name"] == source.name
