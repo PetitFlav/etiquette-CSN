@@ -192,145 +192,28 @@ def _format_validation_date(value: object) -> str:
     return parsed.strftime("%d/%m/%Y")
 
 
-def _extract_amount(value: object) -> str:
-    raw = _to_clean_string(value)
-    if not raw:
-        return ""
+def parse_validation_workbook(path: Path | str) -> list[Row]:
+    """Read a validation Excel workbook and return normalized rows.
 
-    normalized = raw.replace("\u00a0", " ").replace("€", "").replace(",", ".")
-    match = re.search(r"(\d+(?:[\s\.]\d{3})*(?:\.\d+)?)", normalized)
-    if not match:
-        return ""
+    The returned rows follow the same structure as :func:`lire_tableau` with the
+    columns ``Nom``, ``Prénom``, ``Date_de_naissance``, ``Expire_le``, ``Email``,
+    ``Montant`` et ``ErreurValide``. Header names in the workbook are matched in a
+    permissive fashion (accents/spacing ignored) so that slightly different
+    source files can be imported without manual tweaks.
+    """
 
-    number = match.group(1).replace(" ", "")
-    try:
-        value_decimal = Decimal(number)
-    except InvalidOperation:
-        return number
-
-    return f"{value_decimal.quantize(Decimal('0.01'))}"
-
-
-def _looks_like_member_name(cell: str) -> bool:
-    text = _to_clean_string(cell)
-    if not text:
-        return False
-
-    normalized = strip_accents(text).upper()
-    if normalized in {"NOM", "PRENOM", "PRÉNOM", "MEMBRE", "STATUT"}:
-        return False
-    if normalized.startswith("TOTAL"):
-        return False
-    if re.search(r"\badhesion\b", normalized, re.IGNORECASE):
-        return False
-    if re.match(r"^\d", text):
-        return False
-    tokens = [tok for tok in re.split(r"\s+", text.strip()) if tok]
-    if len(tokens) < 2:
-        return False
-    has_upper = any(strip_accents(tok).upper() == strip_accents(tok) for tok in tokens[:2])
-    return has_upper and re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", text) is not None
-
-
-_NAME_CONNECTORS = {
-    "DE",
-    "DES",
-    "DU",
-    "D",
-    "LE",
-    "LA",
-    "LES",
-    "L",
-    "ST",
-    "STE",
-    "SAINT",
-    "SAINTE",
-}
-
-
-def _split_name_parts(text: str) -> tuple[str, str]:
-    cleaned = _to_clean_string(text)
-    if not cleaned:
-        return ("", "")
-
-    first_line = cleaned.splitlines()[0].strip()
-    tokens = [tok for tok in re.split(r"\s+", first_line) if tok]
-    if not tokens:
-        return ("", "")
-
-    surname_tokens: list[str] = []
-    first_name_tokens: list[str] = []
-
-    for idx, token in enumerate(tokens):
-        ascii_token = strip_accents(token).replace("'", "").upper()
-        if not first_name_tokens and (
-            (any(ch.isupper() for ch in token if ch.isalpha()) and not any(ch.islower() for ch in token if ch.isalpha()))
-            or ascii_token in _NAME_CONNECTORS
-        ):
-            surname_tokens.append(token)
-            continue
-
-        first_name_tokens = tokens[idx:]
-        break
-
-    if not first_name_tokens and surname_tokens:
-        first_name_tokens = [surname_tokens.pop()]
-
-    surname = normalize_name(" ".join(surname_tokens).strip()) if surname_tokens else ""
-    firstname = normalize_name(" ".join(first_name_tokens).strip()) if first_name_tokens else ""
-    return (surname, firstname)
-
-
-def _extract_confirmation_date(text: str) -> str:
-    cleaned = _to_clean_string(text)
-    if not cleaned:
-        return ""
-
-    normalized = cleaned.replace("\u00a0", " ")
-    patterns = [
-        (r"\d{2}/\d{2}/\d{4}", "%d/%m/%Y"),
-        (r"\d{2}-\d{2}-\d{4}", "%d-%m-%Y"),
-        (r"\d{4}-\d{2}-\d{2}", "%Y-%m-%d"),
-        (r"\d{4}/\d{2}/\d{2}", "%Y/%m/%d"),
-    ]
-    for pattern, fmt in patterns:
-        match = re.search(pattern, normalized)
-        if not match:
-            continue
-        candidate = match.group(0)
-        parsed = pd.to_datetime(candidate, format=fmt, errors="coerce")
-        if pd.isna(parsed):
-            continue
-        return parsed.strftime("%d/%m/%Y")
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(f"Fichier introuvable: {source}")
 
     try:
-        parsed = pd.to_datetime(normalized, dayfirst=True, errors="coerce")
-    except Exception:
-        parsed = pd.NaT
-    if pd.isna(parsed):
-        return ""
-    return parsed.strftime("%d/%m/%Y")
+        df = pd.read_excel(source, dtype=object)
+    except ValueError:
+        # Older .xls files sometimes require the xlrd engine.
+        df = pd.read_excel(source, dtype=object, engine="xlrd")
+    except Exception as exc:  # pragma: no cover - depends on pandas backends
+        raise RuntimeError(f"Import validation: échec lecture {source.name} → {exc}") from exc
 
-
-def _extract_confirmation_person(text: str) -> str:
-    cleaned = _to_clean_string(text)
-    if not cleaned:
-        return ""
-
-    match = re.search(r"par\s+([^\d,;]+)", cleaned, flags=re.IGNORECASE)
-    if not match:
-        return ""
-
-    person = match.group(1)
-    person = re.split(r"\b(valide|validée|validé|non fourni)\b", person, flags=re.IGNORECASE)[0]
-    person = person.split("(")[0]
-    person = re.split(r"\s{2,}", person)[0]
-    person = person.replace("\u00a0", " ")
-    person = re.sub(r"[,;].*", "", person).strip()
-    return normalize_name(person)
-
-
-def _parse_validation_columnar(df: pd.DataFrame) -> list[Row]:
     if df.empty:
         return []
 
@@ -346,30 +229,30 @@ def _parse_validation_columnar(df: pd.DataFrame) -> list[Row]:
     required = ["Nom", "Prénom"]
     missing = [col for col in required if col not in column_lookup]
     if missing:
-        available = list(df.columns)
         raise ValueError(
-            f"Colonnes manquantes: {missing}. Colonnes disponibles: {available}"
+            f"Colonnes manquantes dans {source.name}: {missing}. "
+            f"Colonnes disponibles: {list(df.columns)}"
         )
 
     selected_columns: dict[str, str] = {target: column_lookup[target] for target in column_lookup}
     df = df.rename(columns={orig: target for target, orig in selected_columns.items()})
     df = df[list(selected_columns.keys())]
 
+    # Ensure the optional columns exist so that downstream logic receives a
+    # consistent schema.
     for optional in ("Date_de_naissance", "Expire_le", "Email", "Montant", "ErreurValide"):
         if optional not in df.columns:
             df[optional] = ""
 
-    df = df[
-        [
-            "Nom",
-            "Prénom",
-            "Date_de_naissance",
-            "Expire_le",
-            "Email",
-            "Montant",
-            "ErreurValide",
-        ]
-    ]
+    df = df[[
+        "Nom",
+        "Prénom",
+        "Date_de_naissance",
+        "Expire_le",
+        "Email",
+        "Montant",
+        "ErreurValide",
+    ]]
 
     df["Nom"] = df["Nom"].map(_to_clean_string).map(normalize_name)
     df["Prénom"] = df["Prénom"].map(_to_clean_string).map(normalize_name)
@@ -381,147 +264,7 @@ def _parse_validation_columnar(df: pd.DataFrame) -> list[Row]:
 
     df = df[(df["Nom"].str.strip() != "") | (df["Prénom"].str.strip() != "")]
 
-    rows = df.to_dict(orient="records")
-    for row in rows:
-        row.setdefault("Validation_confirmee_le", "")
-        row.setdefault("Validation_confirmee_par", "")
-    return rows
-
-
-def _build_row_from_block(block: list[list[str]]) -> Row | None:
-    cleaned_block = [line for line in block if any(line)]
-    if not cleaned_block:
-        return None
-
-    trimmed = cleaned_block[:3]
-    name_line = trimmed[0][0] if trimmed and trimmed[0] else ""
-    nom, prenom = _split_name_parts(name_line)
-
-    montant_cell = ""
-    if len(trimmed) >= 3 and len(trimmed[2]) > 5:
-        montant_cell = trimmed[2][5]
-    montant = _extract_amount(montant_cell)
-
-    confirm_cells = [line[1] for line in trimmed if len(line) > 1 and line[1]]
-    confirm_text = " ".join(confirm_cells)
-    confirmation_date = _extract_confirmation_date(confirm_text)
-    confirmation_person = _extract_confirmation_person(confirm_text)
-
-    if not any([nom, prenom, montant, confirmation_date, confirmation_person]):
-        return None
-
-    return {
-        "Nom": nom,
-        "Prénom": prenom,
-        "Date_de_naissance": "",
-        "Expire_le": "",
-        "Email": "",
-        "Montant": montant,
-        "ErreurValide": "",
-        "Validation_confirmee_le": confirmation_date,
-        "Validation_confirmee_par": confirmation_person,
-    }
-
-
-def _parse_validation_multiline(df: pd.DataFrame) -> list[Row]:
-    if df.empty:
-        return []
-
-    df = df.fillna("")
-    rows: list[Row] = []
-    current_block: list[list[str]] = []
-
-    def _flush(block: list[list[str]]) -> None:
-        if not block:
-            return
-        trimmed_block = block[:3]
-        row = _build_row_from_block(trimmed_block)
-        if row:
-            rows.append(row)
-
-    for _, series in df.iterrows():
-        values = [_to_clean_string(val) for val in series.tolist()]
-        if not any(values):
-            _flush(current_block)
-            current_block = []
-            continue
-
-        first_cell = values[0] if values else ""
-        if _looks_like_member_name(first_cell):
-            _flush(current_block)
-            current_block = [values]
-        else:
-            if current_block:
-                current_block.append(values)
-
-    _flush(current_block)
-    return rows
-
-
-def _write_validation_export(rows: list[Row], *, export_dir: Path, now: datetime) -> Path:
-    export_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = now.strftime("%Y%m%d-%H%M%S")
-    export_path = export_dir / f"FichierValidation_{timestamp}.xlsx"
-
-    desired_columns = [
-        "Nom",
-        "Prénom",
-        "Date_de_naissance",
-        "Expire_le",
-        "Email",
-        "Montant",
-        "ErreurValide",
-        "Validation_confirmee_le",
-        "Validation_confirmee_par",
-    ]
-
-    df = pd.DataFrame(rows)
-    for col in desired_columns:
-        if col not in df.columns:
-            df[col] = ""
-    df = df[desired_columns]
-    df.to_excel(export_path, index=False)
-    return export_path
-
-
-def parse_validation_workbook(
-    path: Path | str,
-    *,
-    export_dir: Path | None = None,
-    now: datetime | None = None,
-) -> ValidationParseResult:
-    """Read a validation workbook and normalise its content."""
-
-    source = Path(path)
-    if not source.exists():
-        raise FileNotFoundError(f"Fichier introuvable: {source}")
-
-    try:
-        df = pd.read_excel(source, dtype=object)
-    except ValueError:
-        df = pd.read_excel(source, dtype=object, engine="xlrd")
-    except Exception as exc:  # pragma: no cover - depends on pandas backends
-        raise RuntimeError(f"Import validation: échec lecture {source.name} → {exc}") from exc
-
-    try:
-        rows = _parse_validation_columnar(df)
-    except ValueError:
-        try:
-            df_raw = pd.read_excel(source, header=None, dtype=object)
-        except ValueError:
-            df_raw = pd.read_excel(source, header=None, dtype=object, engine="xlrd")
-        rows = _parse_validation_multiline(df_raw)
-
-    if not rows:
-        return ValidationParseResult([], None)
-
-    export_path = _write_validation_export(
-        rows,
-        export_dir=export_dir or source.parent,
-        now=now or datetime.now(),
-    )
-
-    return ValidationParseResult(rows, export_path)
+    return df.to_dict(orient="records")
 
 
 def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tuple[list[Row], int, int]:
@@ -567,8 +310,6 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
                 "Email": str(update.get("Email") or "").strip(),
                 "Montant": str(update.get("Montant") or "").strip(),
                 "ErreurValide": str(update.get("ErreurValide") or "").strip(),
-                "Validation_confirmee_le": str(update.get("Validation_confirmee_le") or "").strip(),
-                "Validation_confirmee_par": str(update.get("Validation_confirmee_par") or "").strip(),
                 "Derniere": "",
                 "Compteur": 0,
             }
@@ -586,15 +327,7 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
             row["Prénom"] = prenom
             changed = True
 
-        for key in (
-            "Date_de_naissance",
-            "Expire_le",
-            "Email",
-            "Montant",
-            "ErreurValide",
-            "Validation_confirmee_le",
-            "Validation_confirmee_par",
-        ):
+        for key in ("Date_de_naissance", "Expire_le", "Email", "Montant", "ErreurValide"):
             value = update.get(key)
             if value is None:
                 continue
