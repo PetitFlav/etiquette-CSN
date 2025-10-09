@@ -35,7 +35,13 @@ from src.app.imports import (
     load_last_import,
     persist_last_import,
 )
-from src.app.io_utils import lire_tableau
+try:  # Compatibilité exécutable PyInstaller : l'import peut varier selon le contexte.
+    from src.app.io_utils import lire_tableau
+except ModuleNotFoundError:  # pragma: no cover - dépend du packaging Windows
+    try:
+        from app.io_utils import lire_tableau  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover - dernier recours
+        from io_utils import lire_tableau  # type: ignore
 from src.app.printing import print_ql570_direct
 from src.app.zpl import ecrire_sorties, genere_zpl
 

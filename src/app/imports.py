@@ -9,7 +9,13 @@ from typing import Any, Callable, Iterable
 
 from .config import DB_PATH, LAST_IMPORT_DIR, LAST_IMPORT_METADATA
 from .db import connect, record_print
-from .io_utils import lire_tableau, normalize_name
+try:
+    from .io_utils import lire_tableau, normalize_name
+except ModuleNotFoundError:  # pragma: no cover - pour l'exécutable PyInstaller
+    try:
+        from io_utils import lire_tableau, normalize_name  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover - repli final
+        from app.io_utils import lire_tableau, normalize_name  # type: ignore
 
 
 Row = dict[str, object]

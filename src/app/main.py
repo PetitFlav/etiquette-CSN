@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 import typer
 
-from .io_utils import lire_tableau
+try:
+    from .io_utils import lire_tableau
+except ModuleNotFoundError:  # pragma: no cover - pour l'exécutable PyInstaller
+    try:
+        from io_utils import lire_tableau  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover - ultime recours
+        from app.io_utils import lire_tableau  # type: ignore
 from .zpl import genere_zpl, ecrire_sorties
 from .db import init_db, connect, already_printed, record_print, list_prints as db_list_prints
 
