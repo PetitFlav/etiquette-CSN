@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import pandas as pd
-from openpyxl import load_workbook
 
 from .config import DB_PATH, LAST_IMPORT_DIR, LAST_IMPORT_METADATA
 from .db import connect, record_print
@@ -26,15 +25,6 @@ except ModuleNotFoundError:  # pragma: no cover - pour l'exécutable PyInstaller
 
 Row = dict[str, object]
 LookupKey = tuple[str, str]
-
-
-@dataclass(slots=True)
-class _CellValue:
-    """Representation of a worksheet cell with optional hyperlink metadata."""
-
-    text: str
-    raw: str
-    hyperlink: bool = False
 
 
 @dataclass(slots=True)
@@ -202,205 +192,28 @@ def _format_validation_date(value: object) -> str:
     return parsed.strftime("%d/%m/%Y")
 
 
-def _extract_amount(value: object) -> str:
-    raw = _to_clean_string(value)
-    if not raw:
-        return ""
+def parse_validation_workbook(path: Path | str) -> list[Row]:
+    """Read a validation Excel workbook and return normalized rows.
 
-    normalized = raw.replace("\u00a0", " ").replace("€", "").replace(",", ".")
-    match = re.search(r"(\d+(?:[\s\.]\d{3})*(?:\.\d+)?)", normalized)
-    if not match:
-        return ""
+    The returned rows follow the same structure as :func:`lire_tableau` with the
+    columns ``Nom``, ``Prénom``, ``Date_de_naissance``, ``Expire_le``, ``Email``,
+    ``Montant`` et ``ErreurValide``. Header names in the workbook are matched in a
+    permissive fashion (accents/spacing ignored) so that slightly different
+    source files can be imported without manual tweaks.
+    """
 
-    number = match.group(1).replace(" ", "")
-    try:
-        value_decimal = Decimal(number)
-    except InvalidOperation:
-        return number
-
-    return f"{value_decimal.quantize(Decimal('0.01'))}"
-
-
-def _extract_hyperlink_text(cell: object) -> str:
-    """Return the display text for hyperlink-like formulas or hyperlink cells."""
-
-    if isinstance(cell, _CellValue):
-        if cell.hyperlink and cell.text:
-            return cell.text.strip()
-        raw_source = cell.raw
-        fallback = cell.text
-    else:
-        raw_source = str(cell or "")
-        fallback = raw_source
-
-    raw_text = str(raw_source or "").strip()
-    if not raw_text:
-        return ""
-
-    match = re.search(
-        r"=(?:HYPERLINK|LIEN_HYPERTEXTE)\s*\((.*)\)",
-        raw_text,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return str(fallback or raw_text).strip()
-
-    args = match.group(1)
-    quoted = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', args)
-    if quoted:
-        return quoted[-1]
-
-    # Fallback: split arguments on ';' or ',' and take the last one
-    for separator in (";", ","):
-        if separator in args:
-            candidate = args.split(separator)[-1].strip()
-            return candidate.strip('"')
-
-    return str(fallback or raw_text).strip()
-
-
-def _looks_like_member_name(cell: object) -> bool:
-    hyperlink = isinstance(cell, _CellValue) and cell.hyperlink
-    raw_text = _to_clean_string(cell)
-    text = _extract_hyperlink_text(cell)
-    if not text:
-        return False
-
-    normalized = strip_accents(text).upper()
-    if normalized in {"NOM", "PRENOM", "PRÉNOM", "MEMBRE", "STATUT"}:
-        return False
-    if normalized.startswith("TOTAL"):
-        return False
-    if re.search(r"\badhesion\b", normalized, re.IGNORECASE):
-        return False
-    if re.match(r"^\d", text):
-        return False
-    tokens = [tok for tok in re.split(r"\s+", text.strip()) if tok]
-    if len(tokens) < 2:
-        return False
-
-    if hyperlink:
-        return True
-
-    if raw_text.lstrip().startswith("="):
-        return True
-
-    first = tokens[0]
-    if not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", first):
-        return False
-
-    second = tokens[1]
-    if not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", second):
-        return False
-
-    if not hyperlink and not raw_text.lstrip().startswith("="):
-        if not second[:1].isalpha() or not second[:1].isupper():
-            return False
-
-    return True
-
-
-_NAME_CONNECTORS = {
-    "DE",
-    "DES",
-    "DU",
-    "D",
-    "LE",
-    "LA",
-    "LES",
-    "L",
-    "ST",
-    "STE",
-    "SAINT",
-    "SAINTE",
-}
-
-
-def _split_name_parts(cell: object) -> tuple[str, str]:
-    cleaned = _extract_hyperlink_text(cell)
-    cleaned = _to_clean_string(cleaned)
-    if not cleaned:
-        return ("", "")
-
-    first_line = cleaned.splitlines()[0].strip()
-    tokens = [tok for tok in re.split(r"\s+", first_line) if tok]
-    if not tokens:
-        return ("", "")
-
-    surname_tokens: list[str] = []
-    first_name_tokens: list[str] = []
-
-    for idx, token in enumerate(tokens):
-        ascii_token = strip_accents(token).replace("'", "").upper()
-        if not surname_tokens:
-            surname_tokens.append(token)
-            continue
-
-        if ascii_token in _NAME_CONNECTORS:
-            surname_tokens.append(token)
-            continue
-
-        first_name_tokens = tokens[idx:]
-        break
-
-    if not first_name_tokens and surname_tokens:
-        first_name_tokens = [surname_tokens.pop()]
-
-    surname = normalize_name(" ".join(surname_tokens).strip()) if surname_tokens else ""
-    firstname = normalize_name(" ".join(first_name_tokens).strip()) if first_name_tokens else ""
-    return (surname, firstname)
-
-
-def _extract_confirmation_date(text: str) -> str:
-    cleaned = _to_clean_string(text)
-    if not cleaned:
-        return ""
-
-    normalized = cleaned.replace("\u00a0", " ")
-    patterns = [
-        (r"\d{2}/\d{2}/\d{4}", "%d/%m/%Y"),
-        (r"\d{2}-\d{2}-\d{4}", "%d-%m-%Y"),
-        (r"\d{4}-\d{2}-\d{2}", "%Y-%m-%d"),
-        (r"\d{4}/\d{2}/\d{2}", "%Y/%m/%d"),
-    ]
-    for pattern, fmt in patterns:
-        match = re.search(pattern, normalized)
-        if not match:
-            continue
-        candidate = match.group(0)
-        parsed = pd.to_datetime(candidate, format=fmt, errors="coerce")
-        if pd.isna(parsed):
-            continue
-        return parsed.strftime("%d/%m/%Y")
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(f"Fichier introuvable: {source}")
 
     try:
-        parsed = pd.to_datetime(normalized, dayfirst=True, errors="coerce")
-    except Exception:
-        parsed = pd.NaT
-    if pd.isna(parsed):
-        return ""
-    return parsed.strftime("%d/%m/%Y")
+        df = pd.read_excel(source, dtype=object)
+    except ValueError:
+        # Older .xls files sometimes require the xlrd engine.
+        df = pd.read_excel(source, dtype=object, engine="xlrd")
+    except Exception as exc:  # pragma: no cover - depends on pandas backends
+        raise RuntimeError(f"Import validation: échec lecture {source.name} → {exc}") from exc
 
-
-def _extract_confirmation_person(text: str) -> str:
-    cleaned = _to_clean_string(text)
-    if not cleaned:
-        return ""
-
-    match = re.search(r"par\s+([^\d,;]+)", cleaned, flags=re.IGNORECASE)
-    if not match:
-        return ""
-
-    person = match.group(1)
-    person = re.split(r"\b(valide|validée|validé|non fourni)\b", person, flags=re.IGNORECASE)[0]
-    person = person.split("(")[0]
-    person = re.split(r"\s{2,}", person)[0]
-    person = person.replace("\u00a0", " ")
-    person = re.sub(r"[,;].*", "", person).strip()
-    return normalize_name(person)
-
-
-def _parse_validation_columnar(df: pd.DataFrame) -> list[Row]:
     if df.empty:
         return []
 
@@ -416,30 +229,30 @@ def _parse_validation_columnar(df: pd.DataFrame) -> list[Row]:
     required = ["Nom", "Prénom"]
     missing = [col for col in required if col not in column_lookup]
     if missing:
-        available = list(df.columns)
         raise ValueError(
-            f"Colonnes manquantes: {missing}. Colonnes disponibles: {available}"
+            f"Colonnes manquantes dans {source.name}: {missing}. "
+            f"Colonnes disponibles: {list(df.columns)}"
         )
 
     selected_columns: dict[str, str] = {target: column_lookup[target] for target in column_lookup}
     df = df.rename(columns={orig: target for target, orig in selected_columns.items()})
     df = df[list(selected_columns.keys())]
 
+    # Ensure the optional columns exist so that downstream logic receives a
+    # consistent schema.
     for optional in ("Date_de_naissance", "Expire_le", "Email", "Montant", "ErreurValide"):
         if optional not in df.columns:
             df[optional] = ""
 
-    df = df[
-        [
-            "Nom",
-            "Prénom",
-            "Date_de_naissance",
-            "Expire_le",
-            "Email",
-            "Montant",
-            "ErreurValide",
-        ]
-    ]
+    df = df[[
+        "Nom",
+        "Prénom",
+        "Date_de_naissance",
+        "Expire_le",
+        "Email",
+        "Montant",
+        "ErreurValide",
+    ]]
 
     df["Nom"] = df["Nom"].map(_to_clean_string).map(normalize_name)
     df["Prénom"] = df["Prénom"].map(_to_clean_string).map(normalize_name)
@@ -451,245 +264,7 @@ def _parse_validation_columnar(df: pd.DataFrame) -> list[Row]:
 
     df = df[(df["Nom"].str.strip() != "") | (df["Prénom"].str.strip() != "")]
 
-    rows = df.to_dict(orient="records")
-    for row in rows:
-        row.setdefault("Validation_confirmee_le", "")
-        row.setdefault("Validation_confirmee_par", "")
-    return rows
-
-
-def _build_row_from_block(block: list[list[_CellValue]]) -> Row | None:
-    if not block:
-        return None
-
-    trimmed = block[:3]
-    name_line = trimmed[0][0] if trimmed and trimmed[0] else _CellValue("", "", False)
-    nom, prenom = _split_name_parts(name_line)
-
-    montant_cell: object = ""
-    if len(trimmed) >= 3 and len(trimmed[2]) > 5:
-        montant_cell = trimmed[2][5]
-    montant = _extract_amount(montant_cell)
-
-    confirm_cells: list[str] = []
-    for line in trimmed:
-        if len(line) <= 1:
-            continue
-        cell = line[1]
-        cell_text = _to_clean_string(cell)
-        if cell_text and re.search(r"confirm", cell_text, flags=re.IGNORECASE):
-            confirm_cells.append(cell_text)
-    confirm_text = " ".join(confirm_cells)
-    confirmation_date = _extract_confirmation_date(confirm_text)
-    confirmation_person = _extract_confirmation_person(confirm_text)
-
-    if not any([nom, prenom, montant, confirmation_date, confirmation_person]):
-        return None
-
-    return {
-        "Nom": nom,
-        "Prénom": prenom,
-        "Date_de_naissance": "",
-        "Expire_le": "",
-        "Email": "",
-        "Montant": montant,
-        "ErreurValide": "",
-        "Validation_confirmee_le": confirmation_date,
-        "Validation_confirmee_par": confirmation_person,
-    }
-
-
-def _read_validation_rows(path: Path) -> list[list[_CellValue]]:
-    """Load raw worksheet values preserving formulas and hyperlink metadata."""
-
-    try:
-        wb = load_workbook(path, data_only=False, read_only=True)
-    except Exception:
-        if path.suffix.lower() == ".xls":
-            try:
-                import xlrd  # type: ignore
-            except ImportError as exc:  # pragma: no cover - optional dependency
-                raise RuntimeError("xlrd requis pour lire les fichiers .xls") from exc
-
-            book = xlrd.open_workbook(path, formatting_info=False)
-            sheet = book.sheet_by_index(0)
-            rows: list[list[_CellValue]] = []
-            for rx in range(sheet.nrows):
-                values: list[_CellValue] = []
-                for cx in range(sheet.ncols):
-                    cell = sheet.cell(rx, cx)
-                    value = cell.value
-                    text = "" if value in (None, "") else str(value)
-                    values.append(_CellValue(text=text, raw=text, hyperlink=False))
-                rows.append(values)
-            return rows
-        raise
-
-    try:
-        ws = wb.active
-        rows: list[list[_CellValue]] = []
-        for row in ws.iter_rows(values_only=False):
-            values: list[_CellValue] = []
-            for cell in row:
-                if cell is None:
-                    values.append(_CellValue(text="", raw="", hyperlink=False))
-                    continue
-
-                display = cell.value
-                text = "" if display is None else str(display)
-                raw_text = text
-                hyperlink = False
-
-                if getattr(cell, "data_type", None) == "f" and isinstance(cell.value, str):
-                    raw_text = cell.value
-
-                hyperlink_obj = getattr(cell, "hyperlink", None)
-                if hyperlink_obj is not None:
-                    hyperlink = True
-                    if not raw_text.lstrip().startswith("="):
-                        target = getattr(hyperlink_obj, "target", "") or ""
-                        raw_text = f'=HYPERLINK("{target}", "{text}")'
-
-                values.append(_CellValue(text=text, raw=raw_text, hyperlink=hyperlink))
-            rows.append(values)
-    finally:
-        wb.close()
-
-    return rows
-
-
-def _parse_validation_multiline(raw_rows: Sequence[Sequence[_CellValue]]) -> list[Row]:
-    if not raw_rows:
-        return []
-
-    rows: list[Row] = []
-    current_block: list[list[_CellValue]] = []
-    current_name_key: str | None = None
-
-    def _flush(block: list[list[_CellValue]]) -> None:
-        if not block:
-            return
-        trimmed_block = block[:3]
-        row = _build_row_from_block(trimmed_block)
-        if row:
-            rows.append(row)
-
-    def _name_key(cell: _CellValue) -> str:
-        text = _extract_hyperlink_text(cell)
-        text = _to_clean_string(text)
-        if not text:
-            return ""
-        return strip_accents(text).upper()
-
-    for raw in raw_rows:
-        cells = [cell if isinstance(cell, _CellValue) else _CellValue(text=_to_clean_string(cell), raw=_to_clean_string(cell), hyperlink=False) for cell in raw]
-        values = [_to_clean_string(cell) for cell in cells]
-        if not any(values):
-            _flush(current_block)
-            current_block = []
-            current_name_key = None
-            continue
-
-        first_cell = cells[0] if cells else _CellValue("", "", False)
-        is_member = _looks_like_member_name(first_cell)
-        is_hyperlink = isinstance(first_cell, _CellValue) and first_cell.hyperlink
-
-        name_key = _name_key(first_cell) if isinstance(first_cell, _CellValue) else ""
-        new_member = False
-
-        if is_member:
-            if not current_block:
-                new_member = True
-            elif is_hyperlink:
-                new_member = True
-            elif current_name_key and name_key and name_key != current_name_key:
-                new_member = True
-
-        if new_member:
-            _flush(current_block)
-            current_block = [cells]
-            current_name_key = name_key or None
-            continue
-
-        if is_member and not current_block:
-            current_block = [cells]
-            current_name_key = name_key or None
-            continue
-
-        if current_block:
-            current_block.append(cells)
-        elif is_member:
-            current_block = [cells]
-            current_name_key = name_key or None
-
-    _flush(current_block)
-    return rows
-
-
-def _write_validation_export(rows: list[Row], *, export_dir: Path, now: datetime) -> Path:
-    export_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = now.strftime("%Y%m%d-%H%M%S")
-    export_path = export_dir / f"FichierValidation_{timestamp}.xlsx"
-
-    desired_columns = [
-        "Nom",
-        "Prénom",
-        "Date_de_naissance",
-        "Expire_le",
-        "Email",
-        "Montant",
-        "ErreurValide",
-        "Validation_confirmee_le",
-        "Validation_confirmee_par",
-    ]
-
-    df = pd.DataFrame(rows)
-    for col in desired_columns:
-        if col not in df.columns:
-            df[col] = ""
-    df = df[desired_columns]
-    df.to_excel(export_path, index=False)
-    return export_path
-
-
-def parse_validation_workbook(
-    path: Path | str,
-    *,
-    export_dir: Path | None = None,
-    now: datetime | None = None,
-) -> ValidationParseResult:
-    """Read a validation workbook and normalise its content."""
-
-    source = Path(path)
-    if not source.exists():
-        raise FileNotFoundError(f"Fichier introuvable: {source}")
-
-    try:
-        df = pd.read_excel(source, dtype=object)
-    except ValueError:
-        df = pd.read_excel(source, dtype=object, engine="xlrd")
-    except Exception as exc:  # pragma: no cover - depends on pandas backends
-        raise RuntimeError(f"Import validation: échec lecture {source.name} → {exc}") from exc
-
-    raw_rows = _read_validation_rows(source)
-    rows = _parse_validation_multiline(raw_rows)
-
-    if not rows:
-        try:
-            rows = _parse_validation_columnar(df)
-        except ValueError:
-            rows = []
-
-    if not rows:
-        return ValidationParseResult([], None)
-
-    export_path = _write_validation_export(
-        rows,
-        export_dir=export_dir or source.parent,
-        now=now or datetime.now(),
-    )
-
-    return ValidationParseResult(rows, export_path)
+    return df.to_dict(orient="records")
 
 
 def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tuple[list[Row], int, int]:
@@ -706,6 +281,16 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
     def _norm(value: object) -> str:
         return normalize_name(str(value or ""))
 
+    def _normalize_erreur_valide_flag(value: object) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        text = str(value or "").strip().lower()
+        if text in {"true", "yes", "1", "y", "oui"}:
+            return "true"
+        if text in {"false", "no", "0", "n", "non"}:
+            return "false"
+        return ""
+
     for update in updates or []:
         nom = _norm(update.get("Nom"))
         prenom = _norm(update.get("Prénom"))
@@ -713,6 +298,8 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
             continue
 
         ddn_update = str(update.get("Date_de_naissance") or "").strip()
+        expire_update = str(update.get("Expire_le") or "").strip()
+        montant_update = str(update.get("Montant") or "").strip()
 
         target_index = None
         for idx, row in enumerate(rows_list):
@@ -735,8 +322,6 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
                 "Email": str(update.get("Email") or "").strip(),
                 "Montant": str(update.get("Montant") or "").strip(),
                 "ErreurValide": str(update.get("ErreurValide") or "").strip(),
-                "Validation_confirmee_le": str(update.get("Validation_confirmee_le") or "").strip(),
-                "Validation_confirmee_par": str(update.get("Validation_confirmee_par") or "").strip(),
                 "Derniere": "",
                 "Compteur": 0,
             }
@@ -747,6 +332,8 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
         row = rows_list[target_index]
         changed = False
 
+        expire_existing = str(row.get("Expire_le") or "").strip()
+
         if row.get("Nom") != nom:
             row["Nom"] = nom
             changed = True
@@ -754,15 +341,7 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
             row["Prénom"] = prenom
             changed = True
 
-        for key in (
-            "Date_de_naissance",
-            "Expire_le",
-            "Email",
-            "Montant",
-            "ErreurValide",
-            "Validation_confirmee_le",
-            "Validation_confirmee_par",
-        ):
+        for key in ("Date_de_naissance", "Expire_le", "Email"):
             value = update.get(key)
             if value is None:
                 continue
@@ -773,6 +352,21 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
                 row[key] = value_str
                 changed = True
 
+        if montant_update:
+            if str(row.get("Montant") or "").strip() != montant_update:
+                row["Montant"] = montant_update
+                changed = True
+
+        if expire_update:
+            if expire_existing and expire_existing != expire_update:
+                desired_flag = "false"
+            else:
+                desired_flag = "true"
+            current_flag = _normalize_erreur_valide_flag(row.get("ErreurValide"))
+            if current_flag != desired_flag:
+                row["ErreurValide"] = desired_flag
+                changed = True
+
         if changed:
             updated += 1
 
@@ -780,8 +374,6 @@ def apply_validation_updates(rows: Sequence[Row], updates: Sequence[Row]) -> tup
 
 
 def _to_clean_string(value: object) -> str:
-    if isinstance(value, _CellValue):
-        return str(value.text or "").strip()
     if value is None:
         return ""
     try:
