@@ -139,19 +139,21 @@ class App(tk.Tk):
         mid = ttk.Frame(self)
         mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        cols = ("sel", "Nom", "Prénom", "Derniere", "Compteur")
+        cols = ("sel", "Nom", "Prénom", "Derniere", "Compteur", "ErreurValide")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
         self.tree.heading("sel", text="✓", command=self.toggle_all)
         self.tree.heading("Nom", text="Nom", command=lambda: self.sort_by("Nom"))
         self.tree.heading("Prénom", text="Prénom", command=lambda: self.sort_by("Prénom"))
         self.tree.heading("Derniere", text="Dernière impression")
         self.tree.heading("Compteur", text="# Impressions")
+        self.tree.heading("ErreurValide", text="Erreur valide")
 
         self.tree.column("sel", width=48, anchor=tk.CENTER, stretch=False)
         self.tree.column("Nom", width=240)
         self.tree.column("Prénom", width=240)
         self.tree.column("Derniere", width=200, anchor=tk.CENTER)
         self.tree.column("Compteur", width=130, anchor=tk.E)
+        self.tree.column("ErreurValide", width=120, anchor=tk.CENTER, stretch=False)
 
         self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
 
@@ -372,11 +374,56 @@ class App(tk.Tk):
         except Exception:
             return s
 
+    def _normalize_erreur_valide(self, value) -> str:
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if value is None:
+            return ""
+        v = str(value).strip().lower()
+        if v in {"", "none", "null"}:
+            return ""
+        if v in {"yes", "true", "1", "y", "oui"}:
+            return "yes"
+        if v in {"no", "false", "0", "n", "non"}:
+            return "no"
+        return ""
+
+    def _fmt_erreur_valide(self, value) -> str:
+        normalized = self._normalize_erreur_valide(value)
+        if normalized == "yes":
+            return "👍"
+        if normalized == "no":
+            return "❌"
+        return ""
+
+    def _erreur_valide_sort_key(self, value) -> tuple[int, str]:
+        normalized = self._normalize_erreur_valide(value)
+        order = {"": 0, "no": 1, "yes": 2}
+        return (order.get(normalized, 0), normalized)
+
     def _update_headers(self):
-        arrow_nom = " ▲" if (self.sort_col == "Nom" and self.sort_asc) else (" ▼" if self.sort_col == "Nom" else "")
-        arrow_prenom = " ▲" if (self.sort_col == "Prénom" and self.sort_asc) else (" ▼" if self.sort_col == "Prénom" else "")
-        self.tree.heading("Nom", text="Nom" + arrow_nom, command=lambda: self.sort_by("Nom"))
-        self.tree.heading("Prénom", text="Prénom" + arrow_prenom, command=lambda: self.sort_by("Prénom"))
+        def label(col: str, base: str) -> str:
+            if self.sort_col != col:
+                return base
+            return base + (" ▲" if self.sort_asc else " ▼")
+
+        self.tree.heading("Nom", text=label("Nom", "Nom"), command=lambda: self.sort_by("Nom"))
+        self.tree.heading("Prénom", text=label("Prénom", "Prénom"), command=lambda: self.sort_by("Prénom"))
+        self.tree.heading(
+            "Derniere",
+            text=label("Derniere", "Dernière impression"),
+            command=lambda: self.sort_by("Derniere"),
+        )
+        self.tree.heading(
+            "Compteur",
+            text=label("Compteur", "# Impressions"),
+            command=lambda: self.sort_by("Compteur"),
+        )
+        self.tree.heading(
+            "ErreurValide",
+            text=label("ErreurValide", "Erreur valide"),
+            command=lambda: self.sort_by("ErreurValide"),
+        )
 
     def _persist_last_import(self, source: Path):
         try:
@@ -619,7 +666,14 @@ class App(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         for idx, r in enumerate(self.view_rows):
             sel_txt = "[x]" if idx in self.checked else "[ ]"
-            values = (sel_txt, r.get("Nom", ""), r.get("Prénom", ""), self._fmt_dt(r.get("Derniere")), r.get("Compteur", 0))
+            values = (
+                sel_txt,
+                r.get("Nom", ""),
+                r.get("Prénom", ""),
+                self._fmt_dt(r.get("Derniere")),
+                r.get("Compteur", 0),
+                self._fmt_erreur_valide(r.get("ErreurValide")),
+            )
             self.tree.insert("", tk.END, iid=str(idx), values=values)
         self.status.set(f"Affichées: {len(self.view_rows)} (sélectionnées: {len(self.checked)})")
 
@@ -671,7 +725,11 @@ class App(tk.Tk):
                     return int(v)
                 except Exception:
                     return 0
-            return (v or "").lower()
+            if col == "ErreurValide":
+                return self._erreur_valide_sort_key(v)
+            if isinstance(v, str):
+                return (v or "").lower()
+            return v
 
         self.view_rows.sort(key=keyfunc, reverse=not self.sort_asc)
 

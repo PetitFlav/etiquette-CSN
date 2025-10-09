@@ -3,7 +3,15 @@ from pathlib import Path
 import unicodedata
 import pandas as pd
 
-COLS_WANTED = ["Nom", "Prénom", "Date_de_naissance", "Expire_le"]
+COLS_WANTED = [
+    "Nom",
+    "Prénom",
+    "Date_de_naissance",
+    "Expire_le",
+    "Email",
+    "Montant",
+    "ErreurValide",
+]
 
 
 def strip_accents(text: str) -> str:
@@ -38,7 +46,11 @@ def lire_tableau(path: str | Path) -> pd.DataFrame:
             hint = " Astuce: essaye de l’ouvrir et de l’enregistrer en .xlsx, ou convertis-le: `soffice --headless --convert-to xlsx fichier.xls`."
         raise RuntimeError(f"Import: échec lecture {path.name} → {e}.{hint}") from e
 
-    mapping = {"Date de naissance": "Date_de_naissance", "Expire le": "Expire_le"}
+    mapping = {
+        "Date de naissance": "Date_de_naissance",
+        "Expire le": "Expire_le",
+        "Adresse mail": "Email",
+    }
     df = df.rename(columns=mapping)
 
     missing = [c for c in COLS_WANTED if c not in df.columns]

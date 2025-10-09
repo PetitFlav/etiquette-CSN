@@ -100,8 +100,8 @@ def test_import_normalizes_names(tmp_path):
 def _write_sample_csv(path: Path) -> None:
     path.write_text(
         "Ignoré\nIgnoré\nIgnoré\n"
-        "Nom,Prénom,Date_de_naissance,Expire_le\n"
-        "Alpha,Test,01/01/2000,31/12/2025\n",
+        "Nom,Prénom,Date_de_naissance,Expire_le,Email,Montant,ErreurValide\n"
+        "Alpha,Test,01/01/2000,31/12/2025,alpha@example.com,123.45,Yes\n",
         encoding="utf-8",
     )
 
@@ -130,4 +130,7 @@ def test_persist_and_load_last_import(tmp_path, monkeypatch):
 
     assert len(rows) == 1
     assert rows[0]["Nom"] == "ALPHA"
+    assert rows[0]["Email"] == "alpha@example.com"
+    assert rows[0]["Montant"] == "123.45"
+    assert rows[0]["ErreurValide"] == "Yes"
     assert loaded_metadata["cached_name"] == source.name
