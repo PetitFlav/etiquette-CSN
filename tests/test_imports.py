@@ -131,6 +131,43 @@ def test_parse_validation_workbook_reformats(tmp_path):
     assert row["ErreurValide"] == "Oui"
 
 
+def test_parse_validation_workbook_handles_libreoffice_single_row(tmp_path):
+    data = pd.DataFrame(
+        {
+            "Nom": ["Nom\nDùpont\nAlpha"],
+            "Prénom": ["Prénom\nÉlise\nBob"],
+            "Date naissance": ["Date de naissance\n01/05/1990\n02/06/1992"],
+            "Date fin": ["Date fin\n2026-12-31\n2026-11-30"],
+            "Adresse mail": ["Adresse mail\nelise@example.com\nbob@example.com"],
+            "Validation": ["Validation\nOui\nNon"],
+            "Montant payé": ["Montant payé\n12,5\n30,75"],
+            "Image 1": ["Picture 1"],
+        }
+    )
+    path = tmp_path / "validation_libreoffice.xlsx"
+    data.to_excel(path, index=False)
+
+    rows = parse_validation_workbook(path)
+
+    assert len(rows) == 2
+    first, second = rows
+    assert first["Nom"] == "DUPONT"
+    assert first["Prénom"] == "ELISE"
+    assert first["Date_de_naissance"] == "01/05/1990"
+    assert first["Expire_le"] == "31/12/2026"
+    assert first["Email"] == "elise@example.com"
+    assert first["Montant"] == "12,5"
+    assert first["ErreurValide"] == "Oui"
+
+    assert second["Nom"] == "ALPHA"
+    assert second["Prénom"] == "BOB"
+    assert second["Date_de_naissance"] == "02/06/1992"
+    assert second["Expire_le"] == "30/11/2026"
+    assert second["Email"] == "bob@example.com"
+    assert second["Montant"] == "30,75"
+    assert second["ErreurValide"] == "Non"
+
+
 def test_apply_validation_updates_updates_and_adds():
     existing = [
         {
