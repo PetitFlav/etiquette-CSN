@@ -120,6 +120,117 @@ def _normalize_header_label(label: object) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _flatten_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return ``df`` with a single level header.
+
+    LibreOffice may export validation workbooks with drawings that generate an
+    additional header level in ``pandas.read_excel``.  Downstream code expects a
+    flat index, so we coerce the header back to strings here.
+    """
+
+    if not isinstance(df.columns, pd.MultiIndex):
+        return df
+
+    flattened = []
+    for column in df.columns:  # type: ignore[union-attr]
+        parts = [str(part).strip() for part in column if str(part).strip() and str(part).strip().lower() != "nan"]
+        flattened.append(" ".join(parts) if parts else "")
+
+    df = df.copy()
+    df.columns = flattened
+    return df
+
+
+def _drop_image_like_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove columns that only contain embedded image markers.
+
+    LibreOffice stores pictures linked to rows as additional columns that only
+    contain OLE/embedded markers.  They should be ignored when normalizing the
+    dataset.
+    """
+
+    image_like_columns: list[str] = []
+    for column in df.columns:
+        normalized = _normalize_header_label(column)
+        if normalized.startswith("image") or normalized.startswith("photo"):
+            image_like_columns.append(column)
+            continue
+
+        values = df[column].dropna()
+        if values.empty:
+            continue
+
+        def _looks_like_image_marker(value: object) -> bool:
+            text = str(value or "").strip().lower()
+            if not text:
+                return True
+            return (
+                text.startswith("=embed(")
+                or text.startswith("oleobject")
+                or text.startswith("picture")
+                or text.startswith("bitmap")
+                or text.endswith(".png")
+                or text.endswith(".jpg")
+                or text.endswith(".jpeg")
+            )
+
+        if values.map(_looks_like_image_marker).all():
+            image_like_columns.append(column)
+
+    if image_like_columns:
+        df = df.drop(columns=image_like_columns)
+    return df
+
+
+def _expand_single_row_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Expand a single-row dataframe where values are separated by newlines.
+
+    Some LibreOffice exports flatten the table into a single row whose cells
+    contain the column title followed by the data separated with newlines.  We
+    detect this situation and rebuild the tabular structure so that each
+    adherent corresponds to its own row again.
+    """
+
+    if len(df) != 1:
+        return df
+
+    row = df.iloc[0]
+    expanded: dict[str, list[object]] = {}
+    max_length = 0
+    multiline_detected = False
+
+    for column in df.columns:
+        value = row[column]
+        if isinstance(value, str):
+            normalized_text = value.replace("\r\n", "\n").replace("\r", "\n")
+            parts = [part.strip() for part in normalized_text.split("\n")]
+            if len(parts) > 1:
+                multiline_detected = True
+            normalized_column = _normalize_header_label(column)
+            expected_headers = {normalized_column}
+            target_column = _VALIDATION_HEADER_MAP.get(normalized_column)
+            if target_column:
+                expected_headers.add(
+                    _normalize_header_label(str(target_column).replace("_", " "))
+                )
+            if parts and _normalize_header_label(parts[0]) in expected_headers:
+                parts = parts[1:]
+            expanded[column] = parts if parts else [""]
+        else:
+            expanded[column] = [value]
+        max_length = max(max_length, len(expanded[column]))
+
+    if not multiline_detected or max_length <= 1:
+        return df
+
+    for column, values in expanded.items():
+        if len(values) < max_length:
+            values = values + ["" for _ in range(max_length - len(values))]
+        expanded[column] = values
+
+    return pd.DataFrame(expanded)
+
+
 _VALIDATION_HEADER_MAP: dict[str, str] = {
     "nom": "Nom",
     "nom usage": "Nom",
@@ -216,6 +327,10 @@ def parse_validation_workbook(path: Path | str) -> list[Row]:
 
     if df.empty:
         return []
+
+    df = _flatten_dataframe_columns(df)
+    df = _drop_image_like_columns(df)
+    df = _expand_single_row_dataframe(df)
 
     column_lookup: dict[str, str] = {}
     for column in df.columns:
