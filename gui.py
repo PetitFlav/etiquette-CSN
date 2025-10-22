@@ -89,7 +89,7 @@ class App(tk.Tk):
 
         self.validation_rows: list[dict[str, str]] = []
         self._validation_lookup: dict[tuple[str, str], dict[str, str]] = {}
-        self._status_icons: dict[str, object] = {}
+        self._status_colors: dict[str, str] = {}
         self._latest_validation_path: Path | None = None
 
         self._load_latest_validation_export()
@@ -102,7 +102,7 @@ class App(tk.Tk):
         self.sort_asc: bool = True
 
         self._build_ui()
-        self._init_status_icons()
+        self._init_status_styles()
         # Gestion fermeture propre (croix)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -168,21 +168,25 @@ class App(tk.Tk):
         mid = ttk.Frame(self)
         mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        cols = ("sel", "Nom", "Prénom", "Derniere", "Compteur")
-        self.tree = ttk.Treeview(mid, columns=cols, show="tree headings", selectmode="extended")
-        self.tree.heading("#0", text="Erreur valide", command=lambda: self.sort_by("ErreurValide"))
+        cols = ("sel", "Nom", "Prénom", "Derniere", "Compteur", "ErreurValide")
+        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
         self.tree.heading("sel", text="✓", command=self.toggle_all)
         self.tree.heading("Nom", text="Nom", command=lambda: self.sort_by("Nom"))
         self.tree.heading("Prénom", text="Prénom", command=lambda: self.sort_by("Prénom"))
         self.tree.heading("Derniere", text="Dernière impression")
         self.tree.heading("Compteur", text="# Impressions")
+        self.tree.heading(
+            "ErreurValide",
+            text="Erreur valide",
+            command=lambda: self.sort_by("ErreurValide"),
+        )
 
-        self.tree.column("#0", width=64, anchor=tk.CENTER, stretch=False)
         self.tree.column("sel", width=48, anchor=tk.CENTER, stretch=False)
         self.tree.column("Nom", width=240)
         self.tree.column("Prénom", width=240)
         self.tree.column("Derniere", width=200, anchor=tk.CENTER)
         self.tree.column("Compteur", width=130, anchor=tk.E)
+        self.tree.column("ErreurValide", width=120, anchor=tk.CENTER, stretch=False)
 
         self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
 
@@ -197,47 +201,14 @@ class App(tk.Tk):
 
         self._update_headers()
 
-    def _init_status_icons(self):
-        style = ttk.Style()
-        background = self._resolve_color(style.lookup("Treeview", "background"))
-        self._status_icons.clear()
-        try:
-            question = tk.BitmapImage(bitmap="question")
-        except tk.TclError:
-            question = self._create_circle_icon("#6c757d", background=background)
-        self._status_icons["question"] = question
-        self._status_icons["red"] = self._create_circle_icon("#c0392b", background=background)
-        self._status_icons["orange"] = self._create_circle_icon("#f39c12", background=background)
-        self._status_icons["green"] = self._create_circle_icon("#27ae60", background=background)
-
-    def _resolve_color(self, color: str | None, fallback: str = "#ffffff") -> str:
-        if not color:
-            return fallback
-        try:
-            r, g, b = self.winfo_rgb(color)
-        except tk.TclError:
-            try:
-                r, g, b = self.winfo_rgb(self.cget("background"))
-            except tk.TclError:
-                return fallback
-        return f"#{r // 256:02x}{g // 256:02x}{b // 256:02x}"
-
-    def _create_circle_icon(self, color: str, *, background: str, size: int = 14) -> tk.PhotoImage:
-        image = tk.PhotoImage(width=size, height=size)
-        image.put(background, to=(0, 0, size, size))
-        try:
-            image.transparency_set(0, 0)
-        except Exception:  # pragma: no cover - Tk < 8.6 without transparency
-            pass
-        radius = (size - 2) / 2
-        center = (size - 1) / 2
-        for x in range(size):
-            for y in range(size):
-                dx = x - center
-                dy = y - center
-                if (dx * dx + dy * dy) <= radius * radius:
-                    image.put(color, (x, y))
-        return image
+    def _init_status_styles(self):
+        self._status_colors = {
+            "status-red": "#c0392b",
+            "status-orange": "#f39c12",
+            "status-green": "#27ae60",
+        }
+        for tag, color in self._status_colors.items():
+            self.tree.tag_configure(tag, foreground=color)
 
     def _load_latest_validation_export(self, *, silent: bool = True):
         try:
@@ -542,10 +513,10 @@ class App(tk.Tk):
     def _fmt_erreur_valide(self, value) -> str:
         normalized = self._normalize_erreur_valide(value)
         mapping = {
-            "question": "?",
-            "red": "⛔",
-            "orange": "⚠",
-            "green": "✅",
+            "red": "Invalide",
+            "orange": "A verifier",
+            "green": "Valide",
+            "question": "A verifier",
         }
         return mapping.get(normalized, "")
 
@@ -560,7 +531,6 @@ class App(tk.Tk):
                 return base
             return base + (" ▲" if self.sort_asc else " ▼")
 
-        self.tree.heading("#0", text=label("ErreurValide", "Erreur valide"), command=lambda: self.sort_by("ErreurValide"))
         self.tree.heading("Nom", text=label("Nom", "Nom"), command=lambda: self.sort_by("Nom"))
         self.tree.heading("Prénom", text=label("Prénom", "Prénom"), command=lambda: self.sort_by("Prénom"))
         self.tree.heading(
@@ -573,6 +543,22 @@ class App(tk.Tk):
             text=label("Compteur", "# Impressions"),
             command=lambda: self.sort_by("Compteur"),
         )
+        self.tree.heading(
+            "ErreurValide",
+            text=label("ErreurValide", "Erreur valide"),
+            command=lambda: self.sort_by("ErreurValide"),
+        )
+
+    def _status_tag_for(self, status_key: str) -> str | None:
+        if not status_key:
+            return None
+        tag_mapping = {
+            "green": "status-green",
+            "red": "status-red",
+            "orange": "status-orange",
+            "question": "status-orange",
+        }
+        return tag_mapping.get(status_key)
 
     def _persist_last_import(self, source: Path):
         try:
@@ -869,12 +855,12 @@ class App(tk.Tk):
                 str(r.get("Prénom", "") or ""),
                 self._fmt_dt(r.get("Derniere")) or "",
                 str(r.get("Compteur", 0) or 0),
+                self._fmt_erreur_valide(r.get("ErreurValide")),
             )
             status_key = self._normalize_erreur_valide(r.get("ErreurValide"))
-            icon = self._status_icons.get(status_key)
-            insert_kwargs = {"text": "", "values": values}
-            if icon is not None:
-                insert_kwargs["image"] = icon
+            tag = self._status_tag_for(status_key)
+            tags = (tag,) if tag else ()
+            insert_kwargs = {"text": "", "values": values, "tags": tags}
             self.tree.insert("", tk.END, iid=str(idx), **insert_kwargs)
         self.status.set(f"Affichées: {len(self.view_rows)} (sélectionnées: {len(self.checked)})")
 
