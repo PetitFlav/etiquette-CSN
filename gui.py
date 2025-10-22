@@ -36,13 +36,21 @@ from src.app.imports import (
     parse_validation_three_line_file,
     persist_last_import,
 )
+from src.app.validation import (
+    build_validation_lookup,
+    compute_validation_status,
+    find_latest_validation_export,
+    load_latest_expiration_by_person,
+    load_validation_export,
+    parse_validator_names,
+)
 try:  # Compatibilité exécutable PyInstaller : l'import peut varier selon le contexte.
-    from src.app.io_utils import lire_tableau
+    from src.app.io_utils import lire_tableau, normalize_name
 except ModuleNotFoundError:  # pragma: no cover - dépend du packaging Windows
     try:
-        from app.io_utils import lire_tableau  # type: ignore
+        from app.io_utils import lire_tableau, normalize_name  # type: ignore
     except ModuleNotFoundError:  # pragma: no cover - dernier recours
-        from io_utils import lire_tableau  # type: ignore
+        from io_utils import lire_tableau, normalize_name  # type: ignore
 from src.app.printing import print_ql570_direct
 from src.app.zpl import ecrire_sorties, genere_zpl
 
@@ -77,6 +85,14 @@ class App(tk.Tk):
 
         self.cfg = self._config_loader()
         self.expiration_default_value = self.cfg.get("default_expire") or self.default_expiration
+        self._validators = parse_validator_names(self.cfg.get("ffessm_validators") or "")
+
+        self.validation_rows: list[dict[str, str]] = []
+        self._validation_lookup: dict[tuple[str, str], dict[str, str]] = {}
+        self._status_icons: dict[str, object] = {}
+        self._latest_validation_path: Path | None = None
+
+        self._load_latest_validation_export()
 
         # État
         self.rows: list[dict] = []      # lignes importées (avec DDN/Expire cachés)
@@ -86,6 +102,7 @@ class App(tk.Tk):
         self.sort_asc: bool = True
 
         self._build_ui()
+        self._init_status_icons()
         # Gestion fermeture propre (croix)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -151,21 +168,21 @@ class App(tk.Tk):
         mid = ttk.Frame(self)
         mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        cols = ("sel", "Nom", "Prénom", "Derniere", "Compteur", "ErreurValide")
-        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
+        cols = ("sel", "Nom", "Prénom", "Derniere", "Compteur")
+        self.tree = ttk.Treeview(mid, columns=cols, show="tree headings", selectmode="extended")
+        self.tree.heading("#0", text="Erreur valide", command=lambda: self.sort_by("ErreurValide"))
         self.tree.heading("sel", text="✓", command=self.toggle_all)
         self.tree.heading("Nom", text="Nom", command=lambda: self.sort_by("Nom"))
         self.tree.heading("Prénom", text="Prénom", command=lambda: self.sort_by("Prénom"))
         self.tree.heading("Derniere", text="Dernière impression")
         self.tree.heading("Compteur", text="# Impressions")
-        self.tree.heading("ErreurValide", text="Erreur valide")
 
+        self.tree.column("#0", width=64, anchor=tk.CENTER, stretch=False)
         self.tree.column("sel", width=48, anchor=tk.CENTER, stretch=False)
         self.tree.column("Nom", width=240)
         self.tree.column("Prénom", width=240)
         self.tree.column("Derniere", width=200, anchor=tk.CENTER)
         self.tree.column("Compteur", width=130, anchor=tk.E)
-        self.tree.column("ErreurValide", width=120, anchor=tk.CENTER, stretch=False)
 
         self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
 
@@ -179,6 +196,76 @@ class App(tk.Tk):
         ttk.Label(self, textvariable=self.status, anchor=tk.W).pack(fill=tk.X, padx=8, pady=(0, 6))
 
         self._update_headers()
+
+    def _init_status_icons(self):
+        style = ttk.Style()
+        background = style.lookup("Treeview", "background") or "#ffffff"
+        self._status_icons.clear()
+        try:
+            question = tk.BitmapImage(bitmap="question")
+        except tk.TclError:
+            question = self._create_circle_icon("#6c757d", background=background)
+        self._status_icons["question"] = question
+        self._status_icons["red"] = self._create_circle_icon("#c0392b", background=background)
+        self._status_icons["orange"] = self._create_circle_icon("#f39c12", background=background)
+        self._status_icons["green"] = self._create_circle_icon("#27ae60", background=background)
+
+    def _create_circle_icon(self, color: str, *, background: str, size: int = 14) -> tk.PhotoImage:
+        image = tk.PhotoImage(width=size, height=size)
+        image.put(background, to=(0, 0, size, size))
+        try:
+            image.transparency_set(0, 0)
+        except Exception:  # pragma: no cover - Tk < 8.6 without transparency
+            pass
+        radius = (size - 2) / 2
+        center = (size - 1) / 2
+        for x in range(size):
+            for y in range(size):
+                dx = x - center
+                dy = y - center
+                if (dx * dx + dy * dy) <= radius * radius:
+                    image.put(color, (x, y))
+        return image
+
+    def _load_latest_validation_export(self, *, silent: bool = True):
+        try:
+            latest = find_latest_validation_export()
+        except Exception as exc:
+            self.validation_rows = []
+            self._validation_lookup = {}
+            self._latest_validation_path = None
+            if not silent:
+                self.toast(f"Validation : {exc}")
+            return
+
+        if not latest:
+            self.validation_rows = []
+            self._validation_lookup = {}
+            self._latest_validation_path = None
+            return
+
+        try:
+            rows = load_validation_export(latest)
+        except Exception as exc:
+            self.validation_rows = []
+            self._validation_lookup = {}
+            self._latest_validation_path = latest
+            if not silent:
+                self.toast(f"Validation : {exc}")
+            return
+
+        self.validation_rows = rows
+        self._validation_lookup = build_validation_lookup(rows)
+        self._latest_validation_path = latest
+
+    def _set_validation_rows(self, rows: list[dict[str, str]], export_path: Path | None = None):
+        self.validation_rows = rows or []
+        self._validation_lookup = build_validation_lookup(self.validation_rows)
+        if export_path:
+            self._latest_validation_path = Path(export_path)
+        self.refresh_from_db_stats()
+        if self.rows:
+            self.apply_filter()
 
     def _show_splash_screen(self):
         splash_cfg = (self.cfg.get("splash_image") or "").strip()
@@ -369,6 +456,32 @@ class App(tk.Tk):
 
 
     # -------------- Helpers --------------
+    def _validation_person_key(self, row: dict) -> tuple[str, str]:
+        nom = normalize_name(str(row.get("Nom") or ""))
+        prenom = normalize_name(str(row.get("Prénom") or ""))
+        return (nom, prenom)
+
+    def _apply_validation_indicators(self, conn):
+        if not self.rows:
+            return
+        if not self._validation_lookup and not self._latest_validation_path:
+            for row in self.rows:
+                row["ErreurValide"] = ""
+            return
+        db_lookup = load_latest_expiration_by_person(conn)
+        default_expire = self.expiration_default_value or ""
+        validators = self._validators
+        for row in self.rows:
+            key = self._validation_person_key(row)
+            status = compute_validation_status(
+                key,
+                db_lookup,
+                self._validation_lookup,
+                default_expire,
+                validators,
+            )
+            row["ErreurValide"] = status
+
     def _row_key(self, r: dict) -> tuple[str, str, str]:
         """Clé unique par personne pour préserver la sélection (Nom+Prénom+DDN)."""
         return (
@@ -387,30 +500,46 @@ class App(tk.Tk):
             return s
 
     def _normalize_erreur_valide(self, value) -> str:
-        if isinstance(value, bool):
-            return "yes" if value else "no"
         if value is None:
             return ""
+        if isinstance(value, bool):
+            return "green" if value else "red"
         v = str(value).strip().lower()
-        if v in {"", "none", "null"}:
+        if not v or v in {"none", "null"}:
             return ""
+        mapping = {
+            "question": "question",
+            "unknown": "question",
+            "?": "question",
+            "red": "red",
+            "error": "red",
+            "ko": "red",
+            "orange": "orange",
+            "warning": "orange",
+            "amber": "orange",
+            "green": "green",
+            "ok": "green",
+            "valid": "green",
+        }
         if v in {"yes", "true", "1", "y", "oui"}:
-            return "yes"
+            return "green"
         if v in {"no", "false", "0", "n", "non"}:
-            return "no"
-        return ""
+            return "red"
+        return mapping.get(v, "")
 
     def _fmt_erreur_valide(self, value) -> str:
         normalized = self._normalize_erreur_valide(value)
-        if normalized == "yes":
-            return "👍"
-        if normalized == "no":
-            return "❌"
-        return ""
+        mapping = {
+            "question": "?",
+            "red": "⛔",
+            "orange": "⚠",
+            "green": "✅",
+        }
+        return mapping.get(normalized, "")
 
     def _erreur_valide_sort_key(self, value) -> tuple[int, str]:
         normalized = self._normalize_erreur_valide(value)
-        order = {"": 0, "no": 1, "yes": 2}
+        order = {"": 0, "question": 1, "red": 2, "orange": 3, "green": 4}
         return (order.get(normalized, 0), normalized)
 
     def _update_headers(self):
@@ -419,6 +548,7 @@ class App(tk.Tk):
                 return base
             return base + (" ▲" if self.sort_asc else " ▼")
 
+        self.tree.heading("#0", text=label("ErreurValide", "Erreur valide"), command=lambda: self.sort_by("ErreurValide"))
         self.tree.heading("Nom", text=label("Nom", "Nom"), command=lambda: self.sort_by("Nom"))
         self.tree.heading("Prénom", text=label("Prénom", "Prénom"), command=lambda: self.sort_by("Prénom"))
         self.tree.heading(
@@ -430,11 +560,6 @@ class App(tk.Tk):
             "Compteur",
             text=label("Compteur", "# Impressions"),
             command=lambda: self.sort_by("Compteur"),
-        )
-        self.tree.heading(
-            "ErreurValide",
-            text=label("ErreurValide", "Erreur valide"),
-            command=lambda: self.sort_by("ErreurValide"),
         )
 
     def _persist_last_import(self, source: Path):
@@ -566,6 +691,16 @@ class App(tk.Tk):
 
         export_path = result.export_path
         if export_path:
+            try:
+                loaded_rows = load_validation_export(export_path)
+            except Exception as exc:
+                self.toast(f"Validation : {exc}")
+                self._set_validation_rows(result.rows, export_path=export_path)
+            else:
+                self._set_validation_rows(loaded_rows, export_path=export_path)
+        else:
+            self._set_validation_rows(result.rows, export_path=None)
+        if export_path:
             if count:
                 message = (
                     f"{count} membre(s) exporté(s) dans {export_path}."
@@ -657,6 +792,8 @@ class App(tk.Tk):
                 last, cnt_total = stats_person.get(pkey, (None, 0))
                 r["Derniere"] = last or ""
                 r["Compteur"] = cnt_total
+
+            self._apply_validation_indicators(cn)
         finally:
             cn.close()
 
@@ -720,13 +857,14 @@ class App(tk.Tk):
                 r.get("Prénom", ""),
                 self._fmt_dt(r.get("Derniere")),
                 r.get("Compteur", 0),
-                self._fmt_erreur_valide(r.get("ErreurValide")),
             )
-            self.tree.insert("", tk.END, iid=str(idx), values=values)
+            status_key = self._normalize_erreur_valide(r.get("ErreurValide"))
+            icon = self._status_icons.get(status_key)
+            self.tree.insert("", tk.END, iid=str(idx), text="", image=icon, values=values)
         self.status.set(f"Affichées: {len(self.view_rows)} (sélectionnées: {len(self.checked)})")
 
     def on_tree_click(self, event):
-        # Clic sur la colonne 1 pour cocher/décocher
+        # Clic sur la colonne "sel" (#1) pour cocher/décocher
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
             return
