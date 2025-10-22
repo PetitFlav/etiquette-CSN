@@ -862,13 +862,13 @@ class App(tk.Tk):
     def render_tree(self):
         self.tree.delete(*self.tree.get_children())
         for idx, r in enumerate(self.view_rows):
-            sel_txt = "[x]" if idx in self.checked else "[ ]"
+            sel_txt = "☑" if idx in self.checked else "☐"
             values = (
                 sel_txt,
-                r.get("Nom", ""),
-                r.get("Prénom", ""),
-                self._fmt_dt(r.get("Derniere")),
-                r.get("Compteur", 0),
+                str(r.get("Nom", "") or ""),
+                str(r.get("Prénom", "") or ""),
+                self._fmt_dt(r.get("Derniere")) or "",
+                str(r.get("Compteur", 0) or 0),
             )
             status_key = self._normalize_erreur_valide(r.get("ErreurValide"))
             icon = self._status_icons.get(status_key)
