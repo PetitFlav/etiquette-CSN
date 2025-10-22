@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+import re
 import unicodedata
 import pandas as pd
 
@@ -26,7 +27,12 @@ def strip_accents(text: str) -> str:
 
 
 def normalize_name(text: str) -> str:
-    return strip_accents(text).strip().upper()
+    normalized = strip_accents(text)
+    # Collapse spaces around hyphens so that "Jean - Pierre" matches "Jean-Pierre"
+    normalized = re.sub(r"\s*-\s*", "-", normalized)
+    # Reduce consecutive whitespace to a single space for consistent comparisons
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip().upper()
 
 def _is_zip(path: Path) -> bool:
     # .xlsx est un ZIP (commence par 'PK\x03\x04')

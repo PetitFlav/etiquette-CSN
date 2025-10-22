@@ -207,8 +207,11 @@ class App(tk.Tk):
             "status-orange": "#f39c12",
             "status-green": "#27ae60",
         }
+        status_column = "ErreurValide"
         for tag, color in self._status_colors.items():
-            self.tree.tag_configure(tag, foreground=color)
+            # Configure the tag so only the "Erreur Valide" column text is tinted.
+            column_spec = f"{{{status_column} {color}}}"
+            self.tree.tag_configure(tag, foreground=column_spec)
 
     def _load_latest_validation_export(self, *, silent: bool = True):
         try:
