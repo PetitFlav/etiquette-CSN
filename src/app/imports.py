@@ -12,7 +12,12 @@ from typing import Any, Callable, Iterable, Sequence
 
 import pandas as pd
 
-from .config import DB_PATH, LAST_IMPORT_DIR, LAST_IMPORT_METADATA
+from .config import (
+    DB_PATH,
+    LAST_IMPORT_DIR,
+    LAST_IMPORT_METADATA,
+    VALIDATION_EXPORT_DIR,
+)
 from .db import connect, record_print
 try:
     from .io_utils import lire_tableau, normalize_name, strip_accents
@@ -31,6 +36,195 @@ LookupKey = tuple[str, str]
 class ValidationParseResult:
     rows: list[Row]
     export_path: Path | None = None
+
+
+NAME_AT_START = re.compile(
+    r"^([A-ZÉÈÀÂÎÔÙÛÇ'`-]{2,})\s+([A-ZÉÈÀÂÎÔÙÛÇ][A-Za-zÀ-ÖØ-öø-ÿ'`-]*(?:\s+[A-ZÉÈÀÂÎÔÙÛÇ][A-Za-zÀ-ÖØ-öø-ÿ'`-]*)*)"
+)
+VALIDATOR_RX = re.compile(
+    r"\bpar\s+([A-ZÉÈÀÂÎÔÙÛÇ'`-]{2,})\s+([A-ZÉÈÀÂÎÔÙÛÇ][A-Za-zÀ-ÖØ-öø-ÿ'`-]*(?:\s+[A-ZÉÈÀÂÎÔÙÛÇ][A-Za-zÀ-ÖØ-öø-ÿ'`-]*)*)",
+    re.IGNORECASE,
+)
+MONTANT_RX = re.compile(r"montant\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)", re.IGNORECASE)
+
+
+def _norm_space(text: object) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    value = (
+        value.replace("\ufeff", "")
+        .replace("\u00A0", " ")
+        .replace("\u202F", " ")
+        .replace("|", " ")
+        .replace(";", " ")
+    )
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _row_to_text(row: Sequence[object]) -> str:
+    parts: list[str] = []
+    for value in row:
+        text = _norm_space(value)
+        if text:
+            parts.append(text)
+    return " ".join(parts)
+
+
+def _format_first_name(value: str) -> str:
+    base = _norm_space(value)
+    if not base:
+        return ""
+    tokens = base.split(" ")
+    formatted_tokens: list[str] = []
+    for token in tokens:
+        if not token:
+            continue
+        hyphen_parts = token.split("-")
+        formatted_parts = [
+            part[:1].upper() + part[1:].lower() if part else ""
+            for part in hyphen_parts
+        ]
+        formatted_tokens.append("-".join(formatted_parts))
+    return " ".join(formatted_tokens)
+
+
+def _clean_output(text: str) -> str:
+    normalized = strip_accents(str(text or "")).replace("€", "")
+    return _norm_space(normalized)
+
+
+def _extract_validator(*lines: str) -> str:
+    for candidate in lines:
+        if not candidate:
+            continue
+        match = VALIDATOR_RX.search(candidate)
+        if not match:
+            continue
+        nom = _norm_space(match.group(1)).upper()
+        prenom = _format_first_name(match.group(2))
+        formatted = f"{prenom} {nom}".strip()
+        return _clean_output(formatted)
+    return ""
+
+
+def _extract_amount(*lines: str) -> str:
+    for candidate in lines:
+        if not candidate:
+            continue
+        if "montant" not in candidate.lower():
+            continue
+        match = MONTANT_RX.search(candidate)
+        if not match:
+            continue
+        raw = match.group(1)
+        cleaned = (
+            raw.replace(" ", "")
+            .replace("\u00A0", "")
+            .replace("\u202F", "")
+            .replace(",", ".")
+        )
+        try:
+            amount = Decimal(cleaned)
+        except InvalidOperation:
+            continue
+        return f"{amount.quantize(Decimal('0.01'))}"
+    return ""
+
+
+def _load_validation_lines(source: Path) -> list[str]:
+    suffix = source.suffix.lower()
+    lines: list[str]
+    if suffix in {".xlsx", ".xls"}:
+        try:
+            df = pd.read_excel(source, header=None, dtype=str).fillna("")
+        except ValueError:
+            df = pd.read_excel(source, header=None, dtype=str, engine="xlrd").fillna("")
+        lines = [_row_to_text(row) for row in df.itertuples(index=False, name=None)]
+    else:
+        try:
+            text = source.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = source.read_text(encoding="latin-1")
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [_norm_space(line) for line in normalized.split("\n")]
+    return [line for line in lines if line]
+
+
+def parse_validation_three_line_file(
+    path: Path | str, *, output_dir: Path | None = None
+) -> ValidationParseResult:
+    """Extract members from a three-line validation file and export a CSV.
+
+    The input file can be a CSV or Excel workbook where each member spans three
+    consecutive lines (``Nom Prenom`` / ``Payé ...`` / ``Montant : xxx €``).
+    Accents are stripped in the exported CSV and the output is saved to the
+    ``Validation`` sub-directory of the application's ``data`` folder unless a
+    custom ``output_dir`` is provided.
+    """
+
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(f"Fichier introuvable: {source}")
+
+    raw_lines = _load_validation_lines(source)
+    records: list[dict[str, str]] = []
+
+    i = 0
+    while i < len(raw_lines):
+        line1 = raw_lines[i]
+        match = NAME_AT_START.search(line1)
+        if not match:
+            i += 1
+            continue
+
+        line2 = raw_lines[i + 1] if i + 1 < len(raw_lines) else ""
+        line3 = raw_lines[i + 2] if i + 2 < len(raw_lines) else ""
+
+        if not line2 or not line3:
+            i += 1
+            continue
+
+        pay_lines = [candidate for candidate in (line2, line3) if candidate]
+        if not any("pay" in candidate.lower() for candidate in pay_lines):
+            i += 1
+            continue
+
+        montant = _extract_amount(line2, line3)
+        if not montant:
+            i += 1
+            continue
+
+        nom = _clean_output(match.group(1)).upper()
+        prenom = _clean_output(_format_first_name(match.group(2)))
+        valide_par = _extract_validator(line1, line2, line3)
+
+        records.append(
+            {
+                "nom": nom,
+                "prenom": prenom,
+                "valide_par": valide_par,
+                "montant": montant,
+            }
+        )
+        i += 3
+        continue
+
+    columns = ["nom", "prenom", "valide_par", "montant"]
+    df = pd.DataFrame(records, columns=columns)
+    if not df.empty:
+        df = df.drop_duplicates()
+        records = df.to_dict(orient="records")
+    else:
+        records = []
+
+    target_dir = output_dir or VALIDATION_EXPORT_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target_path = target_dir / f"{source.stem}_{timestamp}_validation.csv"
+    df.to_csv(target_path, index=False, sep=";", encoding="utf-8", columns=columns)
+
+    return ValidationParseResult(rows=records, export_path=target_path)
 
 
 def build_ddn_lookup_from_rows(rows: Iterable[Row]) -> dict[LookupKey, str | None]:
@@ -554,6 +748,7 @@ __all__ = [
     "import_already_printed_csv",
     "persist_last_import",
     "load_last_import",
+    "parse_validation_three_line_file",
     "parse_validation_workbook",
     "apply_validation_updates",
 ]

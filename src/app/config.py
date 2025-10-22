@@ -21,6 +21,7 @@ ROOT = _resolve_root()
 SRC_DIR = ROOT / "src"
 DATA_DIR = ROOT / "data"
 SORTIES_DIR = DATA_DIR / "sorties"
+VALIDATION_EXPORT_DIR = DATA_DIR / "Validation"
 DB_PATH = DATA_DIR / "app.db"
 LAST_IMPORT_DIR = DATA_DIR / "last_import"
 LAST_IMPORT_METADATA = DATA_DIR / "last_import.json"
@@ -56,6 +57,7 @@ __all__ = [
     "SRC_DIR",
     "DATA_DIR",
     "SORTIES_DIR",
+    "VALIDATION_EXPORT_DIR",
     "DB_PATH",
     "LAST_IMPORT_DIR",
     "LAST_IMPORT_METADATA",

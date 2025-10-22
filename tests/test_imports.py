@@ -11,6 +11,7 @@ from src.app.imports import (
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
     load_last_import,
+    parse_validation_three_line_file,
     parse_validation_workbook,
     persist_last_import,
 )
@@ -245,6 +246,71 @@ def test_apply_validation_updates_marks_error_when_expire_differs():
     assert added == 0
     assert merged[0]["Montant"] == "15"
     assert merged[0]["ErreurValide"] == "false"
+
+
+def test_parse_validation_three_line_file_from_csv(tmp_path):
+    source = tmp_path / "adhesions.csv"
+    source.write_text(
+        "DÛPÔNT Élise\n"
+        "Payé par AUBER Yann\n"
+        "Montant : 45,5 €\n\n"
+        "MARTIN Paul\n"
+        "Payé\n"
+        "Montant : 30 €\n",
+        encoding="utf-8",
+    )
+
+    export_dir = tmp_path / "export"
+    result = parse_validation_three_line_file(source, output_dir=export_dir)
+
+    assert result.export_path is not None
+    assert result.export_path.parent == export_dir
+    assert len(result.rows) == 2
+
+    first, second = result.rows
+    assert first == {
+        "nom": "DUPONT",
+        "prenom": "Elise",
+        "valide_par": "Yann AUBER",
+        "montant": "45.50",
+    }
+    assert second == {
+        "nom": "MARTIN",
+        "prenom": "Paul",
+        "valide_par": "",
+        "montant": "30.00",
+    }
+
+    content = result.export_path.read_text(encoding="utf-8").strip().splitlines()
+    assert content[0] == "nom;prenom;valide_par;montant"
+    assert "DUPONT;Elise;Yann AUBER;45.50" in content[1:]
+    assert "MARTIN;Paul;;30.00" in content[1:]
+
+
+def test_parse_validation_three_line_file_from_excel(tmp_path):
+    data = pd.DataFrame(
+        {
+            0: [
+                "DUPONT Élise",
+                "Payé par AUBER Yann",
+                "Montant : 45 €",
+                "",
+                "MARTIN Paul",
+                "Payé",
+                "Montant : 30 €",
+            ]
+        }
+    )
+    source = tmp_path / "adhesions.xlsx"
+    data.to_excel(source, index=False, header=False)
+
+    export_dir = tmp_path / "export"
+    result = parse_validation_three_line_file(source, output_dir=export_dir)
+
+    assert result.export_path is not None
+    assert result.export_path.parent == export_dir
+    assert len(result.rows) == 2
+    assert any(row["nom"] == "DUPONT" and row["prenom"] == "Elise" for row in result.rows)
 
 
 def _write_sample_csv(path: Path) -> None:
