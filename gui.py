@@ -872,7 +872,10 @@ class App(tk.Tk):
             )
             status_key = self._normalize_erreur_valide(r.get("ErreurValide"))
             icon = self._status_icons.get(status_key)
-            self.tree.insert("", tk.END, iid=str(idx), text="", image=icon, values=values)
+            insert_kwargs = {"text": "", "values": values}
+            if icon is not None:
+                insert_kwargs["image"] = icon
+            self.tree.insert("", tk.END, iid=str(idx), **insert_kwargs)
         self.status.set(f"Affichées: {len(self.view_rows)} (sélectionnées: {len(self.checked)})")
 
     def on_tree_click(self, event):
