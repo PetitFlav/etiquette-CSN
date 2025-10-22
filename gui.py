@@ -33,6 +33,7 @@ from src.app.imports import (
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
     load_last_import,
+    parse_validation_three_line_file,
     persist_last_import,
 )
 try:  # Compatibilité exécutable PyInstaller : l'import peut varier selon le contexte.
@@ -118,6 +119,11 @@ class App(tk.Tk):
         cb.bind("<<ComboboxSelected>>", _on_mode_change)
         
         ttk.Button(top, text="Importer CSV/Excel", command=self.on_import).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            top,
+            text="Importer fichier Validation",
+            command=self.on_import_validation_file,
+        ).pack(side=tk.LEFT, padx=(6, 0))
         if self.cfg.get("backend") != "win32print":
             ttk.Button(top, text="Imprimer ZPL", command=self.on_print).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(top, text="Imprimer QL-570", command=self.on_print_ql570).pack(side=tk.LEFT, padx=(6, 0))
@@ -533,6 +539,42 @@ class App(tk.Tk):
             self._persist_last_import(Path(path))
         except Exception as e:
             messagebox.showerror("Erreur", f"Import: {e}")
+
+    def on_import_validation_file(self):
+        path = filedialog.askopenfilename(
+            title="Choisir un fichier Validation",
+            filetypes=[
+                ("Fichiers CSV", "*.csv"),
+                ("Fichiers Excel", "*.xlsx *.xls"),
+                ("Tous", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        try:
+            result = parse_validation_three_line_file(path)
+        except Exception as exc:
+            messagebox.showerror("Erreur", f"Import Validation : {exc}")
+            return
+
+        count = len(result.rows)
+        if count:
+            self.toast(f"{count} membre(s) Validation exporté(s)")
+        else:
+            self.toast("Aucune entrée trouvée dans le fichier Validation")
+
+        export_path = result.export_path
+        if export_path:
+            if count:
+                message = (
+                    f"{count} membre(s) exporté(s) dans {export_path}."
+                )
+            else:
+                message = (
+                    f"Aucune entrée détectée. Fichier généré : {export_path}."
+                )
+            messagebox.showinfo("Import Validation", message)
 
     def refresh_from_db_stats(self):
         """Complète chaque row avec Derniere/Compteur (toutes expirations) + map per-expire."""
