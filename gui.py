@@ -199,7 +199,7 @@ class App(tk.Tk):
 
     def _init_status_icons(self):
         style = ttk.Style()
-        background = style.lookup("Treeview", "background") or "#ffffff"
+        background = self._resolve_color(style.lookup("Treeview", "background"))
         self._status_icons.clear()
         try:
             question = tk.BitmapImage(bitmap="question")
@@ -209,6 +209,18 @@ class App(tk.Tk):
         self._status_icons["red"] = self._create_circle_icon("#c0392b", background=background)
         self._status_icons["orange"] = self._create_circle_icon("#f39c12", background=background)
         self._status_icons["green"] = self._create_circle_icon("#27ae60", background=background)
+
+    def _resolve_color(self, color: str | None, fallback: str = "#ffffff") -> str:
+        if not color:
+            return fallback
+        try:
+            r, g, b = self.winfo_rgb(color)
+        except tk.TclError:
+            try:
+                r, g, b = self.winfo_rgb(self.cget("background"))
+            except tk.TclError:
+                return fallback
+        return f"#{r // 256:02x}{g // 256:02x}{b // 256:02x}"
 
     def _create_circle_icon(self, color: str, *, background: str, size: int = 14) -> tk.PhotoImage:
         image = tk.PhotoImage(width=size, height=size)
