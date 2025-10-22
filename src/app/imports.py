@@ -89,6 +89,23 @@ def _format_first_name(value: str) -> str:
     return " ".join(formatted_tokens)
 
 
+def _token_starts_with_two_uppercase(token: str) -> bool:
+    letters = [char for char in token if char.isalpha()]
+    if len(letters) < 2:
+        return False
+    return letters[0].isupper() and letters[1].isupper()
+
+
+def _split_compound_last_name(last_name: str, first_name: str) -> tuple[str, str]:
+    last_tokens = [token for token in last_name.split(" ") if token]
+    first_tokens = [token for token in first_name.split(" ") if token]
+
+    while first_tokens and _token_starts_with_two_uppercase(first_tokens[0]):
+        last_tokens.append(first_tokens.pop(0))
+
+    return " ".join(last_tokens), " ".join(first_tokens)
+
+
 def _clean_output(text: str) -> str:
     normalized = strip_accents(str(text or "")).replace("€", "")
     return _norm_space(normalized)
@@ -101,8 +118,11 @@ def _extract_validator(*lines: str) -> str:
         match = VALIDATOR_RX.search(candidate)
         if not match:
             continue
-        nom = _norm_space(match.group(1)).upper()
-        prenom = _format_first_name(match.group(2))
+        base_nom, base_prenom = _split_compound_last_name(
+            _norm_space(match.group(1)), _norm_space(match.group(2))
+        )
+        nom = _clean_output(base_nom).upper()
+        prenom = _format_first_name(base_prenom)
         formatted = f"{prenom} {nom}".strip()
         return _clean_output(formatted)
     return ""
@@ -195,8 +215,11 @@ def parse_validation_three_line_file(
             i += 1
             continue
 
-        nom = _clean_output(match.group(1)).upper()
-        prenom = _clean_output(_format_first_name(match.group(2)))
+        base_nom, base_prenom = _split_compound_last_name(
+            _norm_space(match.group(1)), _norm_space(match.group(2))
+        )
+        nom = _clean_output(base_nom).upper()
+        prenom = _clean_output(_format_first_name(base_prenom))
         valide_par = _extract_validator(line1, line2, line3)
 
         records.append(
