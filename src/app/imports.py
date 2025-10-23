@@ -90,6 +90,74 @@ def _format_first_name(value: str) -> str:
     return " ".join(formatted_tokens)
 
 
+COMMON_FIRST_NAME_TOKENS = {
+    "ADAM",
+    "ALAIN",
+    "ALBERT",
+    "ALEXANDRE",
+    "ALICE",
+    "ANNA",
+    "ANNE",
+    "ANTOINE",
+    "ARTHUR",
+    "BENJAMIN",
+    "CAMILLE",
+    "CAROLINE",
+    "CHARLES",
+    "CHRISTIAN",
+    "CLAIRE",
+    "CLAUDE",
+    "DANIEL",
+    "DAVID",
+    "ELISE",
+    "EMILIE",
+    "EMMA",
+    "FLORENT",
+    "FRANCIS",
+    "FRANCOIS",
+    "FRANÇOIS",
+    "FRANÇOISE",
+    "GABRIEL",
+    "HENRI",
+    "ISABELLE",
+    "JACQUES",
+    "JEAN",
+    "JEANNE",
+    "JEROME",
+    "JULIE",
+    "JULIEN",
+    "LAURENT",
+    "LUC",
+    "LUCIE",
+    "LOUIS",
+    "LOUISE",
+    "MARIA",
+    "MARIE",
+    "MARION",
+    "MARTIN",
+    "MATHIEU",
+    "MICHEL",
+    "MICHELLE",
+    "NICOLAS",
+    "NOEL",
+    "NOËL",
+    "PAUL",
+    "PIERRE",
+    "REMY",
+    "RENÉ",
+    "ROBERT",
+    "SARAH",
+    "SIMON",
+    "SOPHIE",
+    "STEPHANE",
+    "THIERRY",
+    "THOMAS",
+    "VALENTIN",
+    "VALERIE",
+    "VICTOR",
+}
+
+
 def _token_starts_with_two_uppercase(token: str) -> bool:
     if "-" in token:
         # Hyphenated first names (e.g. "JEAN-PAUL") should not be merged into the
@@ -99,6 +167,8 @@ def _token_starts_with_two_uppercase(token: str) -> bool:
     letters = [char for char in token if char.isalpha()]
     if len(letters) < 2:
         return False
+    if token.upper() in COMMON_FIRST_NAME_TOKENS:
+        return False
     return letters[0].isupper() and letters[1].isupper()
 
 
@@ -106,10 +176,61 @@ def _split_compound_last_name(last_name: str, first_name: str) -> tuple[str, str
     last_tokens = [token for token in last_name.split(" ") if token]
     first_tokens = [token for token in first_name.split(" ") if token]
 
-    while first_tokens and _token_starts_with_two_uppercase(first_tokens[0]):
-        last_tokens.append(first_tokens.pop(0))
+    if not first_tokens:
+        return " ".join(last_tokens), ""
 
-    return " ".join(last_tokens), " ".join(first_tokens)
+    max_move = 0
+    for token in first_tokens:
+        if _token_starts_with_two_uppercase(token):
+            max_move += 1
+        else:
+            break
+
+    def score(candidate_last: list[str], candidate_first: list[str], moved: int) -> int:
+        if not candidate_first:
+            return -1_000
+
+        score_value = 0
+
+        if any(any(ch.islower() for ch in token) for token in candidate_first):
+            score_value += 5
+
+        score_value += len(candidate_first)
+
+        if candidate_first and candidate_first[0].upper() in COMMON_FIRST_NAME_TOKENS:
+            score_value += 3
+
+        if any(token.upper() in COMMON_FIRST_NAME_TOKENS for token in candidate_last):
+            score_value -= 4
+
+        if moved == 0:
+            score_value += 1
+
+        return score_value
+
+    best_last = list(last_tokens)
+    best_first = list(first_tokens)
+    best_score = score(best_last, best_first, 0)
+    best_move = 0
+
+    for move_count in range(1, max_move + 1):
+        candidate_last = last_tokens + first_tokens[:move_count]
+        candidate_first = first_tokens[move_count:]
+        candidate_score = score(candidate_last, candidate_first, move_count)
+
+        if candidate_score > best_score or (
+            candidate_score == best_score
+            and len(candidate_first) < len(best_first)
+        ) or (
+            candidate_score == best_score and len(candidate_first) == len(best_first)
+            and move_count > best_move
+        ):
+            best_score = candidate_score
+            best_last = candidate_last
+            best_first = candidate_first
+            best_move = move_count
+
+    return " ".join(best_last), " ".join(best_first)
 
 
 def _clean_output(text: str) -> str:

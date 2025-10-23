@@ -354,6 +354,27 @@ def test_parse_validation_three_line_file_handles_hyphenated_first_name(tmp_path
     ]
 
 
+def test_parse_validation_three_line_file_preserves_uppercase_double_first_name(tmp_path):
+    source = tmp_path / "uppercase-double.csv"
+    source.write_text(
+        "COPPIN JEAN NOËL\n"
+        "Payé par DURAND Alice\n"
+        "Montant : 15 €\n",
+        encoding="utf-8",
+    )
+
+    result = parse_validation_three_line_file(source, output_dir=tmp_path)
+
+    assert result.rows == [
+        {
+            "nom": "COPPIN",
+            "prenom": "JEAN NOEL",
+            "valide_par": "Alice DURAND",
+            "montant": "15.00",
+        }
+    ]
+
+
 def test_parse_validation_three_line_file_collapses_spaced_hyphen(tmp_path):
     source = tmp_path / "spaced-hyphen.csv"
     source.write_text(
