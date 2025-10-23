@@ -494,6 +494,15 @@ def _write_csv_without_optional_columns(path: Path) -> None:
     )
 
 
+def _write_csv_with_lowercase_headers(path: Path) -> None:
+    path.write_text(
+        "Ignoré\nIgnoré\nIgnoré\n"
+        "nom,prenom,date_de_naissance,expire le,adresse email,montant,erreur valide\n"
+        "Auber,Yann,03/03/2003,31/12/2025,yann@example.com,156.00,oui\n",
+        encoding="utf-8",
+    )
+
+
 def test_lire_tableau_adds_missing_optional_columns(tmp_path):
     sample = tmp_path / "import.csv"
     _write_csv_without_optional_columns(sample)
@@ -512,6 +521,27 @@ def test_lire_tableau_adds_missing_optional_columns(tmp_path):
     assert df.iloc[0]["Nom"] == "BETA"
     assert df.iloc[0]["Montant"] == ""
     assert df.iloc[0]["ErreurValide"] == ""
+
+
+def test_lire_tableau_normalizes_header_variants(tmp_path):
+    sample = tmp_path / "import.csv"
+    _write_csv_with_lowercase_headers(sample)
+
+    df = lire_tableau(sample)
+
+    assert list(df.columns) == [
+        "Nom",
+        "Prénom",
+        "Date_de_naissance",
+        "Expire_le",
+        "Email",
+        "Montant",
+        "ErreurValide",
+    ]
+    assert df.iloc[0]["Nom"] == "AUBER"
+    assert df.iloc[0]["Prénom"] == "YANN"
+    assert df.iloc[0]["Montant"] == "156.00"
+    assert df.iloc[0]["ErreurValide"] == "oui"
 
 
 def test_persist_and_load_last_import(tmp_path, monkeypatch):
