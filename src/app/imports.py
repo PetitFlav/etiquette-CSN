@@ -370,8 +370,8 @@ def parse_validation_three_line_file(
         base_nom, base_prenom = _split_compound_last_name(
             _norm_space(match.group(1)), _norm_space(match.group(2))
         )
-        nom = _normalize_compound_name(base_nom)
-        prenom = _normalize_compound_name(_format_first_name(base_prenom))
+        nom = normalize_name(base_nom)
+        prenom = normalize_name(base_prenom)
         valide_par = _extract_validator(line1, line2, line3)
 
         records.append(
