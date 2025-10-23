@@ -20,6 +20,47 @@ COLS_OPTIONAL = [
 COLS_WANTED = COLS_REQUIRED + COLS_OPTIONAL
 
 
+_HEADER_MAP = {
+    "nom": "Nom",
+    "nom de famille": "Nom",
+    "nom usage": "Nom",
+    "prenom": "Prénom",
+    "prénom": "Prénom",
+    "prenom usage": "Prénom",
+    "prenom usuel": "Prénom",
+    "date de naissance": "Date_de_naissance",
+    "date naissance": "Date_de_naissance",
+    "date_naissance": "Date_de_naissance",
+    "ddn": "Date_de_naissance",
+    "expire le": "Expire_le",
+    "date de fin": "Expire_le",
+    "date fin": "Expire_le",
+    "date expiration": "Expire_le",
+    "expiration": "Expire_le",
+    "date limite": "Expire_le",
+    "adresse mail": "Email",
+    "adresse email": "Email",
+    "email": "Email",
+    "courriel": "Email",
+    "montant": "Montant",
+    "montant regle": "Montant",
+    "montant payé": "Montant",
+    "montant paye": "Montant",
+    "montant verse": "Montant",
+    "erreur valide": "ErreurValide",
+    "erreur validée": "ErreurValide",
+    "erreur valider": "ErreurValide",
+    "validation": "ErreurValide",
+}
+
+
+def _normalize_header_label(value: object) -> str:
+    text = strip_accents(str(value or ""))
+    text = text.replace("\u00a0", " ")
+    normalized = re.sub(r"[^0-9A-Za-z]+", " ", text).strip().lower()
+    return re.sub(r"\s+", " ", normalized)
+
+
 def strip_accents(text: str) -> str:
     text = str(text or "")
     normalized = unicodedata.normalize("NFD", text)
@@ -57,12 +98,26 @@ def lire_tableau(path: str | Path) -> pd.DataFrame:
             hint = " Astuce: essaye de l’ouvrir et de l’enregistrer en .xlsx, ou convertis-le: `soffice --headless --convert-to xlsx fichier.xls`."
         raise RuntimeError(f"Import: échec lecture {path.name} → {e}.{hint}") from e
 
-    mapping = {
-        "Date de naissance": "Date_de_naissance",
-        "Expire le": "Expire_le",
-        "Adresse mail": "Email",
-    }
-    df = df.rename(columns=mapping)
+    column_lookup: dict[str, str] = {}
+    for column in df.columns:
+        normalized = _normalize_header_label(column)
+        if not normalized or normalized in column_lookup:
+            continue
+        column_lookup[normalized] = column
+
+    rename_map: dict[str, str] = {}
+    for normalized, target in _HEADER_MAP.items():
+        source = column_lookup.get(normalized)
+        if not source:
+            continue
+        if source == target:
+            continue
+        if target in df.columns and source != target:
+            continue
+        rename_map[source] = target
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
     missing = [c for c in COLS_REQUIRED if c not in df.columns]
     if missing:
