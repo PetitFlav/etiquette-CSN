@@ -104,6 +104,26 @@ def test_import_normalizes_names(tmp_path):
     assert tuple(row) == ("DUPONT", "ALIX", "01/01/2000")
 
 
+def test_record_print_stores_email(tmp_path):
+    db_path = tmp_path / "app.db"
+    init_db(db_path)
+
+    with connect(db_path) as cn:
+        record_print(
+            cn,
+            "Alpha",
+            "User",
+            "01/01/2000",
+            "31/12/2025",
+            "alpha@example.com",
+            zpl=None,
+            status="printed",
+        )
+        row = cn.execute("SELECT email FROM prints LIMIT 1").fetchone()
+
+    assert row["email"] == "alpha@example.com"
+
+
 def test_parse_validation_workbook_reformats(tmp_path):
     data = pd.DataFrame(
         {

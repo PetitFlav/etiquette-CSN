@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS prints (
   prenom TEXT NOT NULL,
   ddn TEXT NOT NULL,
   expire TEXT NOT NULL,
+  email TEXT,
   zpl_checksum TEXT,
   status TEXT NOT NULL DEFAULT 'printed', -- 'printed' ou 'simulated'
   printed_at TEXT NOT NULL                -- ISO 8601 via datetime.utcnow().isoformat()
@@ -53,9 +54,27 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
 def init_db(db_path: Path = DB_PATH) -> None:
     with connect(db_path) as cn:
         cn.executescript(SCHEMA)
+        _ensure_email_column(cn)
 
 def sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _ensure_email_column(conn: sqlite3.Connection) -> None:
+    """Add the ``email`` column to ``prints`` if it is missing."""
+
+    try:
+        cur = conn.execute("PRAGMA table_info(prints)")
+    except sqlite3.OperationalError:
+        return
+
+    columns = {
+        (row["name"] if isinstance(row, sqlite3.Row) else row[1])
+        for row in cur.fetchall()
+    }
+
+    if "email" not in columns:
+        conn.execute("ALTER TABLE prints ADD COLUMN email TEXT")
 
 def already_printed(conn: sqlite3.Connection, nom: str, prenom: str, ddn: str, expire: str) -> bool:
     cur = conn.execute(
@@ -70,16 +89,28 @@ def record_print(
     prenom: str,
     ddn: str,
     expire: str,
+    email: str | None = None,
     zpl: str | None = None,
     status: str = "printed",
 ) -> bool:
+    _ensure_email_column(conn)
     checksum = sha1(zpl) if zpl else None
+    email_value = (email or "").strip()
     conn.execute(
         """
-        INSERT INTO prints(nom, prenom, ddn, expire, zpl_checksum, status, printed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO prints(nom, prenom, ddn, expire, email, zpl_checksum, status, printed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (nom.strip(), prenom.strip(), ddn.strip(), expire.strip(), checksum, status, datetime.utcnow().isoformat()),
+        (
+            nom.strip(),
+            prenom.strip(),
+            ddn.strip(),
+            expire.strip(),
+            email_value,
+            checksum,
+            status,
+            datetime.utcnow().isoformat(),
+        ),
     )
     return True
 

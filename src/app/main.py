@@ -93,6 +93,7 @@ def simulate(
                     r["Prénom"],
                     r["Date_de_naissance"],
                     r["Expire_le"],
+                    r.get("Email", ""),
                     contenu,
                     status="simulated",
                 )
