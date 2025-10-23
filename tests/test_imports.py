@@ -290,21 +290,21 @@ def test_parse_validation_three_line_file_from_csv(tmp_path):
     first, second = result.rows
     assert first == {
         "nom": "DUPONT",
-        "prenom": "Elise",
+        "prenom": "ELISE",
         "valide_par": "Yann AUBER",
         "montant": "45.50",
     }
     assert second == {
         "nom": "MARTIN",
-        "prenom": "Paul",
+        "prenom": "PAUL",
         "valide_par": "",
         "montant": "30.00",
     }
 
     content = result.export_path.read_text(encoding="utf-8").strip().splitlines()
     assert content[0] == "nom;prenom;valide_par;montant"
-    assert "DUPONT;Elise;Yann AUBER;45.50" in content[1:]
-    assert "MARTIN;Paul;;30.00" in content[1:]
+    assert "DUPONT;ELISE;Yann AUBER;45.50" in content[1:]
+    assert "MARTIN;PAUL;;30.00" in content[1:]
 
 
 def test_parse_validation_three_line_file_from_excel(tmp_path):
@@ -330,7 +330,7 @@ def test_parse_validation_three_line_file_from_excel(tmp_path):
     assert result.export_path is not None
     assert result.export_path.parent == export_dir
     assert len(result.rows) == 2
-    assert any(row["nom"] == "DUPONT" and row["prenom"] == "Elise" for row in result.rows)
+    assert any(row["nom"] == "DUPONT" and row["prenom"] == "ELISE" for row in result.rows)
 
 
 def _write_sample_csv(path: Path) -> None:
