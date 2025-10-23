@@ -413,6 +413,7 @@ class App(tk.Tk):
                     ddn = (r.get("Date_de_naissance") or "").strip()
                     expire_val = (r.get("Expire_le") or "").strip()
                     email = (r.get("Email") or "").strip()
+                    montant = (r.get("Montant") or "").strip()
 
                     self._printer(
                         nom,
@@ -432,6 +433,7 @@ class App(tk.Tk):
                         ddn,
                         expire_val,
                         email,
+                        montant,
                         zpl=None,
                         status="printed",
                     )
@@ -492,25 +494,29 @@ class App(tk.Tk):
                 prenom = (row.get("Prénom") or "").strip()
                 ddn = (row.get("Date_de_naissance") or "").strip()
                 expire = (row.get("Expire_le") or "").strip()
-                montant = str(row.get("Montant") or "").strip()
-                if not montant:
-                    failures.append(f"{nom} {prenom} : montant introuvable dans le fichier CSV.")
-                    continue
-
                 contact = fetch_latest_contact(cn, nom, prenom, ddn)
                 email = ""
                 nom_bdd = nom
                 prenom_bdd = prenom
+                montant = ""
                 if contact:
                     nom_bdd = contact.nom or nom
                     prenom_bdd = contact.prenom or prenom
                     email = contact.email.strip()
+                    montant = (contact.montant or "").strip()
 
                 if not email:
                     email = (row.get("Email") or "").strip()
 
                 if not email:
                     failures.append(f"{nom} {prenom} : adresse e-mail introuvable dans la base.")
+                    continue
+
+                if not montant:
+                    montant = str(row.get("Montant") or "").strip()
+
+                if not montant:
+                    failures.append(f"{nom} {prenom} : montant introuvable dans la base ou le fichier.")
                     continue
 
                 data = AttestationData(
@@ -1104,6 +1110,7 @@ class App(tk.Tk):
                         r.get("Date_de_naissance", ""),
                         r.get("Expire_le", ""),
                         r.get("Email", ""),
+                        r.get("Montant", ""),
                         contenu,
                         status="printed",
                     )

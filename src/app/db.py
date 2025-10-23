@@ -166,6 +166,7 @@ class PersonContact:
     nom: str
     prenom: str
     email: str
+    montant: str = ""
 
 
 def person_stats(conn: sqlite3.Connection, nom: Optional[str] = None, prenom: Optional[str] = None) -> Iterable[sqlite3.Row]:
@@ -189,7 +190,7 @@ def fetch_latest_contact(
 ) -> PersonContact | None:
     try:
         params: list[str] = [nom.strip(), prenom.strip()]
-        sql = "SELECT nom, prenom, email FROM prints WHERE nom=? AND prenom=?"
+        sql = "SELECT nom, prenom, email, montant FROM prints WHERE nom=? AND prenom=?"
         if ddn and ddn.strip():
             sql += " AND ddn=?"
             params.append(ddn.strip())
@@ -202,11 +203,11 @@ def fetch_latest_contact(
         return None
 
     email = (row["email"] or "").strip()
-    if not email:
-        return None
+    montant = (row["montant"] or "").strip()
 
     return PersonContact(
         nom=(row["nom"] or "").strip() or nom.strip(),
         prenom=(row["prenom"] or "").strip() or prenom.strip(),
         email=email,
+        montant=montant,
     )
