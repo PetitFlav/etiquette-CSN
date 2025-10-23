@@ -22,13 +22,14 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from src.app.config import (
+    ATTESTATIONS_DIR,
     DEFAULT_EXPIRATION,
     DB_PATH,
     ROOT,
     SORTIES_DIR,
     load_config,
 )
-from src.app.db import connect, init_db, record_print
+from src.app.db import connect, fetch_latest_contact, init_db, record_print
 from src.app.imports import (
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
@@ -51,6 +52,12 @@ except ModuleNotFoundError:  # pragma: no cover - dépend du packaging Windows
         from app.io_utils import lire_tableau, normalize_name  # type: ignore
     except ModuleNotFoundError:  # pragma: no cover - dernier recours
         from io_utils import lire_tableau, normalize_name  # type: ignore
+from src.app.attestations import (
+    AttestationData,
+    generate_attestation_pdf,
+    load_attestation_settings,
+    send_attestation_email,
+)
 from src.app.printing import print_ql570_direct
 from src.app.zpl import ecrire_sorties, genere_zpl
 
@@ -81,7 +88,9 @@ class App(tk.Tk):
         self._printer = printer
         self.db_path = Path(db_path)
         self.sorties_dir = Path(sorties_dir)
+        self.attestations_dir = Path(ATTESTATIONS_DIR)
         self.default_expiration = default_expiration
+        self._attestation_sender = send_attestation_email
 
         self.cfg = self._config_loader()
         self.expiration_default_value = self.cfg.get("default_expire") or self.default_expiration
@@ -144,6 +153,11 @@ class App(tk.Tk):
         if self.cfg.get("backend") != "win32print":
             ttk.Button(top, text="Imprimer ZPL", command=self.on_print).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(top, text="Imprimer QL-570", command=self.on_print_ql570).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            top,
+            text="Envoyer Mail Attestation",
+            command=self.on_send_attestation,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         ttk.Label(top, text="Expiration à garder :").pack(side=tk.LEFT, padx=(16, 4))
         self.exp_var = tk.StringVar(value=self.default_expiration)
@@ -434,6 +448,106 @@ class App(tk.Tk):
             self.config(cursor=old_cursor)
             self.update_idletasks()
 
+    def on_send_attestation(self):
+        if not self.view_rows:
+            messagebox.showinfo("Info", "Aucune donnée à traiter.")
+            return
+        if not self.checked:
+            messagebox.showinfo("Info", "Sélectionnez au moins une ligne (colonne ✓).")
+            return
+
+        settings = load_attestation_settings(self.cfg)
+        if not settings.is_configured:
+            messagebox.showerror(
+                "Configuration email",
+                "Configuration SMTP incomplète (voir config.ini).",
+            )
+            return
+
+        selected = [self.view_rows[idx] for idx in sorted(self.checked)]
+        if not selected:
+            messagebox.showinfo("Info", "Aucune ligne sélectionnée.")
+            return
+
+        old_cursor = self["cursor"]
+        self.config(cursor="watch")
+        self.update_idletasks()
+
+        self.attestations_dir.mkdir(parents=True, exist_ok=True)
+
+        successes = 0
+        failures: list[str] = []
+
+        try:
+            cn = connect(self.db_path)
+        except Exception as exc:
+            self.config(cursor=old_cursor)
+            self.update_idletasks()
+            messagebox.showerror("Erreur", f"Connexion DB : {exc}")
+            return
+
+        try:
+            for row in selected:
+                nom = (row.get("Nom") or "").strip()
+                prenom = (row.get("Prénom") or "").strip()
+                ddn = (row.get("Date_de_naissance") or "").strip()
+                expire = (row.get("Expire_le") or "").strip()
+                montant = str(row.get("Montant") or "").strip()
+                if not montant:
+                    failures.append(f"{nom} {prenom} : montant introuvable dans le fichier CSV.")
+                    continue
+
+                contact = fetch_latest_contact(cn, nom, prenom, ddn)
+                email = ""
+                nom_bdd = nom
+                prenom_bdd = prenom
+                if contact:
+                    nom_bdd = contact.nom or nom
+                    prenom_bdd = contact.prenom or prenom
+                    email = contact.email.strip()
+
+                if not email:
+                    email = (row.get("Email") or "").strip()
+
+                if not email:
+                    failures.append(f"{nom} {prenom} : adresse e-mail introuvable dans la base.")
+                    continue
+
+                data = AttestationData(
+                    nom=nom_bdd or nom,
+                    prenom=prenom_bdd or prenom,
+                    email=email,
+                    montant=montant,
+                    expire=expire,
+                    date_de_naissance=ddn,
+                )
+
+                try:
+                    pdf_path = generate_attestation_pdf(self.attestations_dir, data)
+                    self._attestation_sender(settings, data, pdf_path)
+                except Exception as exc:  # pragma: no cover - dépend des backends SMTP
+                    failures.append(f"{data.prenom} {data.nom} : {exc}")
+                    continue
+
+                successes += 1
+        finally:
+            cn.close()
+            self.config(cursor=old_cursor)
+            self.update_idletasks()
+
+        if successes:
+            self.toast(f"{successes} attestation(s) envoyée(s)")
+
+        if failures and successes:
+            details = "\n".join(failures)
+            messagebox.showwarning(
+                "Envoi d'attestation",
+                f"{successes} attestation(s) envoyée(s).\n\nÉchecs :\n{details}",
+            )
+        elif failures:
+            messagebox.showerror("Envoi d'attestation", "\n".join(failures))
+        elif successes:
+            messagebox.showinfo("Succès", f"{successes} attestation(s) envoyée(s).")
     def on_reset_db(self):
         ok = messagebox.askyesno(
             "Confirmation",
@@ -1012,5 +1126,6 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     SORTIES_DIR.mkdir(parents=True, exist_ok=True)
+    ATTESTATIONS_DIR.mkdir(parents=True, exist_ok=True)
     app = App()
     app.mainloop()
