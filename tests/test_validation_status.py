@@ -34,15 +34,15 @@ def test_load_validation_export_returns_rows(tmp_path):
     path = tmp_path / "sample_validation.csv"
     df = pd.DataFrame(
         [
-            {"nom": "DUPONT", "prenom": "ALICE", "valide_par": "Jean"},
+            {"nom": "DUPONT", "prenom": "ALICE", "valide_par": "Jean", "montant": "45"},
             {"nom": "DURAND", "prenom": "Bob", "valide_par": "Marie"},
         ]
     )
     df.to_csv(path, sep=";", index=False, encoding="utf-8")
     rows = load_validation_export(path)
     assert rows == [
-        {"nom": "DUPONT", "prenom": "ALICE", "valide_par": "Jean"},
-        {"nom": "DURAND", "prenom": "Bob", "valide_par": "Marie"},
+        {"nom": "DUPONT", "prenom": "ALICE", "valide_par": "Jean", "montant": "45"},
+        {"nom": "DURAND", "prenom": "Bob", "valide_par": "Marie", "montant": ""},
     ]
 
 

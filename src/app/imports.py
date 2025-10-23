@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -18,7 +18,7 @@ from .config import (
     LAST_IMPORT_METADATA,
     VALIDATION_EXPORT_DIR,
 )
-from .db import connect, record_print
+from .db import connect, record_print, update_person_montant
 try:
     from .io_utils import lire_tableau, normalize_name, strip_accents
 except ModuleNotFoundError:  # pragma: no cover - pour l'exécutable PyInstaller
@@ -203,7 +203,11 @@ def _load_validation_lines(source: Path) -> list[str]:
 
 
 def parse_validation_three_line_file(
-    path: Path | str, *, output_dir: Path | None = None
+    path: Path | str,
+    *,
+    output_dir: Path | None = None,
+    db_path: Path | None = None,
+    connect_fn: Callable[[Path], Any] | None = None,
 ) -> ValidationParseResult:
     """Extract members from a three-line validation file and export a CSV.
 
@@ -284,7 +288,50 @@ def parse_validation_three_line_file(
     target_path = target_dir / f"{source.stem}_{timestamp}_validation.csv"
     df.to_csv(target_path, index=False, sep=";", encoding="utf-8", columns=columns)
 
+    _sync_validation_montants(records, db_path=db_path, connect_fn=connect_fn)
+
     return ValidationParseResult(rows=records, export_path=target_path)
+
+
+def _sync_validation_montants(
+    records: Iterable[Mapping[str, str]],
+    *,
+    db_path: Path | None = None,
+    connect_fn: Callable[[Path], Any] | None = None,
+) -> int:
+    """Update the ``montant`` value in the database for matching people.
+
+    Returns the number of rows updated. Any database errors are silently ignored
+    because synchronisation is a best-effort step that should not block the
+    validation export.
+    """
+
+    if not records:
+        return 0
+
+    target_path = db_path or DB_PATH
+    connector = connect_fn or connect
+
+    try:
+        with connector(target_path) as cn:  # type: ignore[arg-type]
+            updated = 0
+            seen: set[tuple[str, str]] = set()
+            for row in records:
+                nom = str(row.get("nom") or "").strip()
+                prenom = str(row.get("prenom") or "").strip()
+                montant = str(row.get("montant") or "").strip()
+                if not nom or not prenom or not montant:
+                    continue
+                key = (nom, prenom)
+                if key in seen:
+                    continue
+                seen.add(key)
+                updated += update_person_montant(cn, nom, prenom, montant)
+            return updated
+    except Exception:
+        return 0
+
+    return 0
 
 
 def build_ddn_lookup_from_rows(rows: Iterable[Row]) -> dict[LookupKey, str | None]:

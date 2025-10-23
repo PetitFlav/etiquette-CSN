@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS prints (
   ddn TEXT NOT NULL,
   expire TEXT NOT NULL,
   email TEXT,
+  montant TEXT,
   zpl_checksum TEXT,
   status TEXT NOT NULL DEFAULT 'printed', -- 'printed' ou 'simulated'
   printed_at TEXT NOT NULL                -- ISO 8601 via datetime.utcnow().isoformat()
@@ -56,26 +57,37 @@ def init_db(db_path: Path = DB_PATH) -> None:
     with connect(db_path) as cn:
         cn.executescript(SCHEMA)
         _ensure_email_column(cn)
+        _ensure_montant_column(cn)
 
 def sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def _ensure_email_column(conn: sqlite3.Connection) -> None:
-    """Add the ``email`` column to ``prints`` if it is missing."""
-
+def _ensure_columns(conn: sqlite3.Connection) -> set[str]:
     try:
         cur = conn.execute("PRAGMA table_info(prints)")
     except sqlite3.OperationalError:
-        return
+        return set()
 
-    columns = {
+    return {
         (row["name"] if isinstance(row, sqlite3.Row) else row[1])
         for row in cur.fetchall()
     }
 
-    if "email" not in columns:
+def _ensure_email_column(conn: sqlite3.Connection) -> None:
+    """Add the ``email`` column to ``prints`` if it is missing."""
+
+    columns = _ensure_columns(conn)
+    if columns and "email" not in columns:
         conn.execute("ALTER TABLE prints ADD COLUMN email TEXT")
+
+
+def _ensure_montant_column(conn: sqlite3.Connection) -> None:
+    """Add the ``montant`` column to ``prints`` if it is missing."""
+
+    columns = _ensure_columns(conn)
+    if columns and "montant" not in columns:
+        conn.execute("ALTER TABLE prints ADD COLUMN montant TEXT")
 
 def already_printed(conn: sqlite3.Connection, nom: str, prenom: str, ddn: str, expire: str) -> bool:
     cur = conn.execute(
@@ -91,16 +103,19 @@ def record_print(
     ddn: str,
     expire: str,
     email: str | None = None,
+    montant: str | None = None,
     zpl: str | None = None,
     status: str = "printed",
 ) -> bool:
     _ensure_email_column(conn)
+    _ensure_montant_column(conn)
     checksum = sha1(zpl) if zpl else None
     email_value = (email or "").strip()
+    montant_value = (montant or "").strip()
     conn.execute(
         """
-        INSERT INTO prints(nom, prenom, ddn, expire, email, zpl_checksum, status, printed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO prints(nom, prenom, ddn, expire, email, montant, zpl_checksum, status, printed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             nom.strip(),
@@ -108,12 +123,36 @@ def record_print(
             ddn.strip(),
             expire.strip(),
             email_value,
+            montant_value,
             checksum,
             status,
             datetime.utcnow().isoformat(),
         ),
     )
     return True
+
+
+def update_person_montant(
+    conn: sqlite3.Connection,
+    nom: str,
+    prenom: str,
+    montant: str,
+) -> int:
+    """Update the ``montant`` value for the given person.
+
+    Returns the number of rows that were updated.
+    """
+
+    if not nom or not prenom:
+        return 0
+
+    _ensure_montant_column(conn)
+    montant_value = (montant or "").strip()
+    cur = conn.execute(
+        "UPDATE prints SET montant=? WHERE nom=? AND prenom=?",
+        (montant_value, nom.strip(), prenom.strip()),
+    )
+    return cur.rowcount
 
 def list_prints(conn: sqlite3.Connection, expire: Optional[str] = None) -> Iterable[sqlite3.Row]:
     if expire:

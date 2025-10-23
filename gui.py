@@ -808,7 +808,7 @@ class App(tk.Tk):
             return
 
         try:
-            result = parse_validation_three_line_file(path)
+            result = parse_validation_three_line_file(path, db_path=self.db_path)
         except Exception as exc:
             messagebox.showerror("Erreur", f"Import Validation : {exc}")
             return
