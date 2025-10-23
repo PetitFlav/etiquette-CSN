@@ -58,22 +58,25 @@ def test_compute_validation_status_applies_rules():
             {"nom": "dupont", "prenom": "alice", "valide_par": "Validé par Jean"},
             {"nom": "durand", "prenom": "bob", "valide_par": "Validé par Marie"},
             {"nom": "martin", "prenom": "clara", "valide_par": "Validé par Paul"},
+            {"nom": "solo", "prenom": "carla", "valide_par": "Validé par Paul"},
         ]
     )
     validators = parse_validator_names("Jean;Marie")
     default_expire = "31/12/2026"
 
+    status_csv_only = compute_validation_status(("SOLO", "CARLA"), db_lookup, validation_lookup, default_expire, validators)
     status_none = compute_validation_status(("NOG", "BODY"), db_lookup, validation_lookup, default_expire, validators)
-    status_question = compute_validation_status(("RIVIERE", "EMMA"), db_lookup, validation_lookup, default_expire, validators)
-    status_red = compute_validation_status(("DURAND", "BOB"), db_lookup, validation_lookup, "31/12/2027", validators)
+    status_db_only = compute_validation_status(("RIVIERE", "EMMA"), db_lookup, validation_lookup, default_expire, validators)
+    status_mismatch = compute_validation_status(("DURAND", "BOB"), db_lookup, validation_lookup, "31/12/2027", validators)
     status_green = compute_validation_status(("DUPONT", "ALICE"), db_lookup, validation_lookup, default_expire, validators)
-    status_orange = compute_validation_status(("MARTIN", "CLARA"), db_lookup, validation_lookup, default_expire, validators)
+    status_green_validator = compute_validation_status(("MARTIN", "CLARA"), db_lookup, validation_lookup, default_expire, validators)
 
+    assert status_csv_only == ""
     assert status_none == ""
-    assert status_question == "question"
-    assert status_red == "red"
+    assert status_db_only == "red"
+    assert status_mismatch == "orange"
     assert status_green == "green"
-    assert status_orange == "orange"
+    assert status_green_validator == "green"
 
 
 def test_load_latest_expiration_by_person_returns_latest(tmp_path):
