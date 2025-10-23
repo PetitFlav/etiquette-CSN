@@ -219,7 +219,7 @@ def parse_validation_three_line_file(
             _norm_space(match.group(1)), _norm_space(match.group(2))
         )
         nom = _clean_output(base_nom).upper()
-        prenom = _clean_output(_format_first_name(base_prenom))
+        prenom = _clean_output(_format_first_name(base_prenom)).upper()
         valide_par = _extract_validator(line1, line2, line3)
 
         records.append(
