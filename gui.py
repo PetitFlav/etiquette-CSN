@@ -135,10 +135,10 @@ class App(tk.Tk):
             self.apply_filter()
         cb.bind("<<ComboboxSelected>>", _on_mode_change)
         
-        ttk.Button(top, text="Importer CSV/Excel", command=self.on_import).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(top, text="Fichier Profil", command=self.on_import).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
             top,
-            text="Importer fichier Validation",
+            text="Fichier Validation",
             command=self.on_import_validation_file,
         ).pack(side=tk.LEFT, padx=(6, 0))
         if self.cfg.get("backend") != "win32print":
@@ -398,6 +398,7 @@ class App(tk.Tk):
                     prenom = (r.get("Prénom") or "").strip()
                     ddn = (r.get("Date_de_naissance") or "").strip()
                     expire_val = (r.get("Expire_le") or "").strip()
+                    email = (r.get("Email") or "").strip()
 
                     self._printer(
                         nom,
@@ -410,7 +411,16 @@ class App(tk.Tk):
                         rotate=rotate,
                     )
 
-                    record_print(cn, nom, prenom, ddn, expire_val, zpl=None, status="printed")
+                    record_print(
+                        cn,
+                        nom,
+                        prenom,
+                        ddn,
+                        expire_val,
+                        email,
+                        zpl=None,
+                        status="printed",
+                    )
 
             # Rafraîchit stats + vue
             self.refresh_from_db_stats()
@@ -979,6 +989,7 @@ class App(tk.Tk):
                         r.get("Prénom", ""),
                         r.get("Date_de_naissance", ""),
                         r.get("Expire_le", ""),
+                        r.get("Email", ""),
                         contenu,
                         status="printed",
                     )
