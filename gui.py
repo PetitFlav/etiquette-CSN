@@ -209,9 +209,14 @@ class App(tk.Tk):
         }
         status_column = "ErreurValide"
         for tag, color in self._status_colors.items():
-            # Configure the tag so only the "Erreur Valide" column text is tinted.
+            # Configure the tag so only the "Erreur Valide" column text is tinted when supported.
             column_spec = f"{{{status_column} {color}}}"
-            self.tree.tag_configure(tag, foreground=column_spec)
+            try:
+                self.tree.tag_configure(tag, foreground=column_spec)
+            except tk.TclError:
+                # Older Tk versions (< 8.7) do not support per-column colors. Fall back to
+                # classic colouring so that the UI stays functional instead of crashing.
+                self.tree.tag_configure(tag, foreground=color)
 
     def _load_latest_validation_export(self, *, silent: bool = True):
         try:
