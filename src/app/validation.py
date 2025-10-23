@@ -96,20 +96,6 @@ def _normalize_expire(value: str) -> str:
     return text
 
 
-def _tokenize(text: str) -> set[str]:
-    if not text:
-        return set()
-    normalized = strip_accents(text).upper()
-    return {token for token in re.split(r"[^A-Z0-9]+", normalized) if token}
-
-
-def _validator_present(valide_par: str, validators: set[str]) -> bool:
-    if not validators:
-        return False
-    tokens = _tokenize(valide_par)
-    return any(validator in tokens for validator in validators)
-
-
 def compute_validation_status(
     key: tuple[str, str],
     db_lookup: Mapping[tuple[str, str], DbExpiration],
@@ -119,30 +105,32 @@ def compute_validation_status(
 ) -> str:
     """Return the status to display for ``key`` according to the ruleset."""
 
+    # ``validators`` is kept for API compatibility although it no longer affects the ruleset.
+
     if not key or not any(key):
         return ""
 
     db_entry = db_lookup.get(key)
-    if not db_entry:
+    validation_entry = validation_lookup.get(key)
+
+    if not db_entry and not validation_entry:
         return ""
 
-    validation_entry = validation_lookup.get(key)
-    if not validation_entry:
-        return "question"
+    if validation_entry and not db_entry:
+        return ""
+
+    if db_entry and not validation_entry:
+        return "red"
+
+    if not db_entry or not validation_entry:
+        return ""
 
     cfg_expire = _normalize_expire(default_expire)
     db_expire = _normalize_expire(db_entry.expire)
 
-    if cfg_expire and db_expire and cfg_expire != db_expire:
-        return "red"
-    if cfg_expire and not db_expire:
-        return "red"
-
-    if not validators:
+    if cfg_expire == db_expire:
         return "green"
 
-    if _validator_present(validation_entry.get("valide_par", ""), validators):
-        return "green"
     return "orange"
 
 
