@@ -423,6 +423,59 @@ def test_parse_validation_three_line_file_skips_lines_until_next_name(tmp_path):
     assert [row["nom"] for row in result.rows] == ["DUPONT", "MARTIN"]
 
 
+def test_parse_validation_three_line_file_updates_db_montant(tmp_path):
+    db_path = tmp_path / "app.db"
+    init_db(db_path)
+
+    with connect(db_path) as cn:
+        record_print(
+            cn,
+            "DUPONT",
+            "ELISE",
+            "01/01/2000",
+            "31/12/2025",
+            "elise@example.com",
+            zpl=None,
+            status="printed",
+        )
+        record_print(
+            cn,
+            "MARTIN",
+            "PAUL",
+            "02/02/2000",
+            "31/12/2025",
+            "paul@example.com",
+            zpl=None,
+            status="printed",
+        )
+
+    source = tmp_path / "validation.csv"
+    source.write_text(
+        "DUPONT Elise\n"
+        "Payé par CLUB TEST\n"
+        "Montant : 45 €\n"
+        "MARTIN Paul\n"
+        "Payé\n"
+        "Montant : 30 €\n",
+        encoding="utf-8",
+    )
+
+    parse_validation_three_line_file(source, output_dir=tmp_path, db_path=db_path)
+
+    with connect(db_path) as cn:
+        dupont = cn.execute(
+            "SELECT montant FROM prints WHERE nom=? AND prenom=?",
+            ("DUPONT", "ELISE"),
+        ).fetchone()
+        martin = cn.execute(
+            "SELECT montant FROM prints WHERE nom=? AND prenom=?",
+            ("MARTIN", "PAUL"),
+        ).fetchone()
+
+    assert dupont["montant"] == "45.00"
+    assert martin["montant"] == "30.00"
+
+
 def _write_sample_csv(path: Path) -> None:
     path.write_text(
         "Ignoré\nIgnoré\nIgnoré\n"

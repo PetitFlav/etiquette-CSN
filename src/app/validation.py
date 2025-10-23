@@ -50,12 +50,12 @@ def load_validation_export(path: Path | str) -> list[dict[str, str]]:
     except Exception as exc:  # pragma: no cover - surface informative error
         raise RuntimeError(f"Import validation: échec lecture {source.name} → {exc}") from exc
 
-    for column in ("nom", "prenom", "valide_par"):
+    for column in ("nom", "prenom", "valide_par", "montant"):
         if column not in df.columns:
             df[column] = ""
 
     df = df.fillna("")
-    return df[["nom", "prenom", "valide_par"]].to_dict(orient="records")
+    return df[["nom", "prenom", "valide_par", "montant"]].to_dict(orient="records")
 
 
 def build_validation_lookup(rows: Iterable[Mapping[str, object]]) -> dict[tuple[str, str], dict[str, str]]:
@@ -71,6 +71,7 @@ def build_validation_lookup(rows: Iterable[Mapping[str, object]]) -> dict[tuple[
             "nom": nom,
             "prenom": prenom,
             "valide_par": str(row.get("valide_par", "")),
+            "montant": str(row.get("montant", "")),
         }
     return lookup
 
