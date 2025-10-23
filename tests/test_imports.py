@@ -104,6 +104,35 @@ def test_import_normalizes_names(tmp_path):
     assert tuple(row) == ("DUPONT", "ALIX", "01/01/2000")
 
 
+def test_import_handles_header_with_amount_column(tmp_path):
+    db_path = tmp_path / "app.db"
+    init_db(db_path)
+
+    csv_path = tmp_path / "import.csv"
+    csv_path.write_text(
+        "Nom;Prénom;Montant\nAlpha;Test;15\nBeta;User;30\n",
+        encoding="utf-8",
+    )
+
+    imported, skipped = import_already_printed_csv(
+        csv_path,
+        "31/12/2025",
+        rows_ddn_lookup=None,
+        db_path=db_path,
+    )
+
+    assert imported == 2
+    assert skipped == 0
+
+    with connect(db_path) as cn:
+        rows = cn.execute(
+            "SELECT nom, prenom FROM prints WHERE expire=? ORDER BY nom",
+            ("31/12/2025",),
+        ).fetchall()
+
+    assert [tuple(row) for row in rows] == [("ALPHA", "TEST"), ("BETA", "USER")]
+
+
 def test_record_print_stores_email(tmp_path):
     db_path = tmp_path / "app.db"
     init_db(db_path)
