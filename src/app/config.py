@@ -22,6 +22,7 @@ SRC_DIR = ROOT / "src"
 DATA_DIR = ROOT / "data"
 SORTIES_DIR = DATA_DIR / "sorties"
 ATTESTATIONS_DIR = DATA_DIR / "attestations"
+ATTESTATION_TEMPLATE_PATH = DATA_DIR / "Attestation" / "modele_attestation.docx"
 VALIDATION_EXPORT_DIR = DATA_DIR / "Validation"
 DB_PATH = DATA_DIR / "app.db"
 LAST_IMPORT_DIR = DATA_DIR / "last_import"
@@ -83,6 +84,7 @@ __all__ = [
     "DATA_DIR",
     "SORTIES_DIR",
     "ATTESTATIONS_DIR",
+    "ATTESTATION_TEMPLATE_PATH",
     "VALIDATION_EXPORT_DIR",
     "DB_PATH",
     "LAST_IMPORT_DIR",

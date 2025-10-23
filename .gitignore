@@ -7,3 +7,4 @@ Output/
 *.spec
 data/*.db
 data/sorties/
+data/Attestation/modele_attestation.docx

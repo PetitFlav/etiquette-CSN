@@ -7,8 +7,12 @@ from email.message import EmailMessage
 import smtplib
 from pathlib import Path
 from typing import Callable, ContextManager, Iterable, Mapping
+from xml.etree import ElementTree as ET
+from zipfile import ZipFile
 
 from jinja2 import Template
+
+from .config import ATTESTATION_TEMPLATE_PATH
 
 
 DEFAULT_SUBJECT = "Attestation de paiement - {{ prenom }} {{ nom }}"
@@ -130,34 +134,123 @@ def _escape_pdf_text(value: str) -> str:
     return escaped
 
 
-def _build_pdf_stream_lines(data: AttestationData) -> Iterable[str]:
-    lines = [
+def _docx_template_lines(data: AttestationData, template_path: Path | None) -> list[str]:
+    """Return attestation lines rendered from the DOCX template.
+
+    When the template is missing or unparsable, a textual fallback is used.
+    """
+
+    try:
+        path = template_path or ATTESTATION_TEMPLATE_PATH
+        with ZipFile(path) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+    except FileNotFoundError:
+        return _fallback_template_lines(data)
+    except KeyError:
+        return _fallback_template_lines(data)
+
+    rendered = _apply_template_replacements(xml, data)
+    try:
+        return _extract_paragraphs(rendered)
+    except ET.ParseError:
+        return _fallback_template_lines(data)
+
+
+def _fallback_template_lines(data: AttestationData) -> list[str]:
+    montant_text = _normalize_montant_value(data.montant)
+    return [
         "Attestation de paiement",
-        f"Nom : {data.nom}",
-        f"Prénom : {data.prenom}",
-        f"Adresse e-mail : {data.email}",
-        f"Montant réglé : {data.montant}",
+        "",
+        f"Nous certifions que {data.prenom} {data.nom}",
+        f"a réglé pour la somme de {montant_text} au titre de son inscription.",
+        "",
+        f"Fait à Nantes, le {data.generated_at.strftime('%d/%m/%Y')}",
+        "",
+        "Signature",
     ]
+
+
+def _normalize_montant_value(raw: str) -> str:
+    montant = (raw or "").strip()
+    if not montant:
+        return ""
+    if montant.endswith("€"):
+        return montant
+    return f"{montant} €"
+
+
+def _apply_template_replacements(xml: str, data: AttestationData) -> str:
+    montant_text = _normalize_montant_value(data.montant)
+    full_name = f"{data.prenom} {data.nom}".strip()
+    date_text = data.generated_at.strftime("%d/%m/%Y")
+
+    replacements = [
+        ("Mr, Mme, Melle .......", f"Mr, Mme, Melle {full_name}" if full_name else "Mr, Mme, Melle"),
+        (
+            "pour la somme de .....€",
+            f"pour la somme de {montant_text or '_____ €'}",
+        ),
+        ("Fait à Nantes, le ", f"Fait à Nantes, le {date_text}"),
+    ]
+
+    rendered = xml
+    for needle, value in replacements:
+        rendered = rendered.replace(needle, value)
+    return rendered
+
+
+def _extract_paragraphs(xml: str) -> list[str]:
+    namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    root = ET.fromstring(xml)
+    body = root.find("w:body", namespaces)
+    if body is None:
+        return []
+
+    lines: list[str] = []
+    for paragraph in body.findall("w:p", namespaces):
+        texts = [node.text for node in paragraph.findall('.//w:t', namespaces) if node.text]
+        lines.append("".join(texts))
+
+    return lines
+
+
+def _merge_additional_metadata(lines: list[str], data: AttestationData) -> list[str]:
+    enriched = list(lines)
+    extra_lines: list[str] = []
     if data.expire:
-        lines.append(f"Expiration : {data.expire}")
+        extra_lines.append(f"Expiration : {data.expire}")
     if data.date_de_naissance:
-        lines.append(f"Date de naissance : {data.date_de_naissance}")
-    lines.append(f"Émis le : {data.generated_at.strftime('%d/%m/%Y')}")
+        extra_lines.append(f"Date de naissance : {data.date_de_naissance}")
+    if extra_lines:
+        if enriched and enriched[-1].strip():
+            enriched.append("")
+        enriched.extend(extra_lines)
+    return enriched
+
+
+def _build_pdf_stream_lines(data: AttestationData) -> Iterable[str]:
+    lines = _docx_template_lines(data, ATTESTATION_TEMPLATE_PATH)
+
+    if not lines:
+        lines = _fallback_template_lines(data)
+
+    lines = _merge_additional_metadata(lines, data)
 
     y = 780
+    first_text_idx = next((idx for idx, value in enumerate(lines) if value.strip()), 0)
     for idx, line in enumerate(lines):
-        font_size = 18 if idx == 0 else 12
+        font_size = 18 if idx == first_text_idx else 12
         yield "BT"
         yield f"/F1 {font_size} Tf"
         yield f"72 {y} Td"
         yield f"({_escape_pdf_text(line)}) Tj"
         yield "ET"
-        y -= 28 if idx == 0 else 20
+        y -= 28 if idx == first_text_idx else 20
 
 
 def build_attestation_pdf_bytes(data: AttestationData) -> bytes:
     content_lines = list(_build_pdf_stream_lines(data))
-    content_stream = "\n".join(content_lines).encode("latin-1", "replace")
+    content_stream = "\n".join(content_lines).encode("cp1252", "replace")
 
     objects: list[bytes] = []
     objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
