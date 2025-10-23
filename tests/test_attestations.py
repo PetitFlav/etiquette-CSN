@@ -116,3 +116,57 @@ def test_fetch_latest_contact_prefers_most_recent_email() -> None:
     assert contact is not None
     assert contact.email == "alice.new@example.com"
     assert contact.montant == "45"
+
+
+def test_fetch_latest_contact_uses_latest_montant_even_without_email() -> None:
+    cn = sqlite3.connect(":memory:")
+    cn.row_factory = sqlite3.Row
+    cn.executescript(
+        """
+        CREATE TABLE prints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nom TEXT,
+            prenom TEXT,
+            ddn TEXT,
+            expire TEXT,
+            email TEXT,
+            montant TEXT,
+            zpl_checksum TEXT,
+            status TEXT,
+            printed_at TEXT
+        );
+        """
+    )
+
+    cn.execute(
+        "INSERT INTO prints (nom, prenom, ddn, expire, email, montant, status, printed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "DUPONT",
+            "ALICE",
+            "01/01/1990",
+            "31/12/2025",
+            "alice@example.com",
+            "35",
+            "printed",
+            "2024-01-01T10:00:00",
+        ),
+    )
+    cn.execute(
+        "INSERT INTO prints (nom, prenom, ddn, expire, email, montant, status, printed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "DUPONT",
+            "ALICE",
+            "01/01/1990",
+            "31/12/2026",
+            "",
+            "50",
+            "printed",
+            "2024-03-01T10:00:00",
+        ),
+    )
+
+    contact = fetch_latest_contact(cn, "DUPONT", "ALICE", "01/01/1990")
+
+    assert contact is not None
+    assert contact.email == "alice@example.com"
+    assert contact.montant == "50"
