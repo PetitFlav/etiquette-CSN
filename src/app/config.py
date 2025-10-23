@@ -21,6 +21,7 @@ ROOT = _resolve_root()
 SRC_DIR = ROOT / "src"
 DATA_DIR = ROOT / "data"
 SORTIES_DIR = DATA_DIR / "sorties"
+ATTESTATIONS_DIR = DATA_DIR / "attestations"
 VALIDATION_EXPORT_DIR = DATA_DIR / "Validation"
 DB_PATH = DATA_DIR / "app.db"
 LAST_IMPORT_DIR = DATA_DIR / "last_import"
@@ -50,6 +51,29 @@ def load_config() -> Dict[str, str]:
         "splash_image": cfg.get("app", "splash_image", fallback=""),
         "show_reset_db_button": cfg.get("app", "show_reset_db_button", fallback="false"),
         "rotate": cfg.get("impression", "rotate", fallback="0"),
+        "smtp_host": cfg.get("email", "smtp_host", fallback=""),
+        "smtp_port": cfg.get("email", "smtp_port", fallback=""),
+        "smtp_user": cfg.get("email", "smtp_user", fallback=""),
+        "smtp_password": cfg.get("email", "smtp_password", fallback=""),
+        "smtp_use_tls": cfg.get("email", "smtp_use_tls", fallback="true"),
+        "smtp_use_ssl": cfg.get("email", "smtp_use_ssl", fallback="false"),
+        "smtp_sender": cfg.get("email", "smtp_sender", fallback=""),
+        "smtp_timeout": cfg.get("email", "smtp_timeout", fallback="30"),
+        "attestation_subject": cfg.get(
+            "email",
+            "attestation_subject",
+            fallback="Attestation de paiement - {{ prenom }} {{ nom }}",
+        ),
+        "attestation_body": cfg.get(
+            "email",
+            "attestation_body",
+            fallback=(
+                "Bonjour {{ prenom }},\n\n"
+                "Veuillez trouver ci-joint votre attestation de paiement.\n"
+                "Montant réglé : {{ montant }}.\n\n"
+                "Cordialement."
+            ),
+        ),
     }
 
 
@@ -58,6 +82,7 @@ __all__ = [
     "SRC_DIR",
     "DATA_DIR",
     "SORTIES_DIR",
+    "ATTESTATIONS_DIR",
     "VALIDATION_EXPORT_DIR",
     "DB_PATH",
     "LAST_IMPORT_DIR",

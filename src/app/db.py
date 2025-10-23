@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
 from typing import Iterable, Optional
@@ -121,6 +122,13 @@ def list_prints(conn: sqlite3.Connection, expire: Optional[str] = None) -> Itera
         cur = conn.execute("SELECT * FROM prints ORDER BY printed_at DESC")
     return cur.fetchall()
 
+@dataclass
+class PersonContact:
+    nom: str
+    prenom: str
+    email: str
+
+
 def person_stats(conn: sqlite3.Connection, nom: Optional[str] = None, prenom: Optional[str] = None) -> Iterable[sqlite3.Row]:
     sql = "SELECT nom, prenom, ddn, last_print, cnt FROM v_person_stats"
     params, conds = [], []
@@ -132,3 +140,34 @@ def person_stats(conn: sqlite3.Connection, nom: Optional[str] = None, prenom: Op
         sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY nom, prenom, ddn"
     return conn.execute(sql, params).fetchall()
+
+
+def fetch_latest_contact(
+    conn: sqlite3.Connection,
+    nom: str,
+    prenom: str,
+    ddn: Optional[str] = None,
+) -> PersonContact | None:
+    try:
+        params: list[str] = [nom.strip(), prenom.strip()]
+        sql = "SELECT nom, prenom, email FROM prints WHERE nom=? AND prenom=?"
+        if ddn and ddn.strip():
+            sql += " AND ddn=?"
+            params.append(ddn.strip())
+        sql += " AND email IS NOT NULL AND TRIM(email) != '' ORDER BY printed_at DESC LIMIT 1"
+        row = conn.execute(sql, params).fetchone()
+    except sqlite3.OperationalError:
+        return None
+
+    if not row:
+        return None
+
+    email = (row["email"] or "").strip()
+    if not email:
+        return None
+
+    return PersonContact(
+        nom=(row["nom"] or "").strip() or nom.strip(),
+        prenom=(row["prenom"] or "").strip() or prenom.strip(),
+        email=email,
+    )
