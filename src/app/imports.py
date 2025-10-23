@@ -328,10 +328,42 @@ def import_already_printed_csv(
     db_target = db_path or DB_PATH
     with csv_path.open("r", encoding="utf-8", newline="") as fh:
         reader = csv.reader(fh, delimiter=";")
+        header_decided = False
+        header_lookup: dict[str, int] = {}
+        use_header = False
+
         with connect_fn(db_target) as cn:  # type: ignore[call-arg]
-            for nom, prenom in reader:
-                nom = normalize_name((nom or "").strip())
-                prenom = normalize_name((prenom or "").strip())
+            for row in reader:
+                cells = [str(cell or "") for cell in row]
+                if not any(cell.strip() for cell in cells):
+                    skipped += 1
+                    continue
+
+                if not header_decided:
+                    normalized = [_normalize_header_label(cell) for cell in cells]
+                    if "nom" in normalized and "prenom" in normalized:
+                        for idx, label in enumerate(normalized):
+                            if label == "nom" and "nom" not in header_lookup:
+                                header_lookup["nom"] = idx
+                            if label == "prenom" and "prenom" not in header_lookup:
+                                header_lookup["prenom"] = idx
+                        use_header = True
+                        header_decided = True
+                        continue
+                    header_decided = True
+
+                if use_header:
+                    nom_idx = header_lookup.get("nom", 0)
+                    prenom_idx = header_lookup.get("prenom", 1)
+                    nom_raw = cells[nom_idx] if nom_idx < len(cells) else ""
+                    prenom_raw = cells[prenom_idx] if prenom_idx < len(cells) else ""
+                else:
+                    nom_raw = cells[0] if len(cells) >= 1 else ""
+                    prenom_raw = cells[1] if len(cells) >= 2 else ""
+
+                nom = normalize_name(nom_raw.strip())
+                prenom = normalize_name(prenom_raw.strip())
+
                 if not nom and not prenom:
                     skipped += 1
                     continue
