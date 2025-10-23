@@ -59,6 +59,7 @@ def _norm_space(text: object) -> str:
         .replace("|", " ")
         .replace(";", " ")
     )
+    value = re.sub(r"\s*-\s*", "-", value)
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -116,6 +117,31 @@ def _clean_output(text: str) -> str:
     return _norm_space(normalized)
 
 
+def _normalize_compound_name(text: str) -> str:
+    """Return ``text`` in uppercase while preserving compound separators."""
+
+    cleaned = _clean_output(text)
+    if not cleaned:
+        return ""
+
+    # Collapse any spacing around hyphens so that tokens are contiguous.
+    normalized_hyphen = re.sub(r"\s*-\s*", "-", cleaned)
+
+    formatted_tokens: list[str] = []
+    for token in normalized_hyphen.split(" "):
+        if not token:
+            continue
+        if "-" in token:
+            parts = [part for part in token.split("-") if part]
+            if not parts:
+                continue
+            formatted_tokens.append("-".join(part.upper() for part in parts))
+        else:
+            formatted_tokens.append(token.upper())
+
+    return " ".join(formatted_tokens)
+
+
 def _extract_validator(*lines: str) -> str:
     for candidate in lines:
         if not candidate:
@@ -126,7 +152,7 @@ def _extract_validator(*lines: str) -> str:
         base_nom, base_prenom = _split_compound_last_name(
             _norm_space(match.group(1)), _norm_space(match.group(2))
         )
-        nom = _clean_output(base_nom).upper()
+        nom = _normalize_compound_name(base_nom)
         prenom = _format_first_name(base_prenom)
         formatted = f"{prenom} {nom}".strip()
         return _clean_output(formatted)
@@ -223,8 +249,8 @@ def parse_validation_three_line_file(
         base_nom, base_prenom = _split_compound_last_name(
             _norm_space(match.group(1)), _norm_space(match.group(2))
         )
-        nom = _clean_output(base_nom).upper()
-        prenom = _clean_output(_format_first_name(base_prenom)).upper()
+        nom = _normalize_compound_name(base_nom)
+        prenom = _normalize_compound_name(_format_first_name(base_prenom))
         valide_par = _extract_validator(line1, line2, line3)
 
         records.append(

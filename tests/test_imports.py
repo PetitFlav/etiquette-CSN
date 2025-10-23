@@ -354,6 +354,27 @@ def test_parse_validation_three_line_file_handles_hyphenated_first_name(tmp_path
     ]
 
 
+def test_parse_validation_three_line_file_collapses_spaced_hyphen(tmp_path):
+    source = tmp_path / "spaced-hyphen.csv"
+    source.write_text(
+        "DU - PONT JEAN - PAUL\n"
+        "Payé par MARTIN Alice\n"
+        "Montant : 12 €\n",
+        encoding="utf-8",
+    )
+
+    result = parse_validation_three_line_file(source, output_dir=tmp_path)
+
+    assert result.rows == [
+        {
+            "nom": "DU-PONT",
+            "prenom": "JEAN-PAUL",
+            "valide_par": "Alice MARTIN",
+            "montant": "12.00",
+        }
+    ]
+
+
 def test_parse_validation_three_line_file_skips_lines_until_next_name(tmp_path):
     source = tmp_path / "extra_lines.csv"
     source.write_text(
