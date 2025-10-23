@@ -333,6 +333,46 @@ def test_parse_validation_three_line_file_from_excel(tmp_path):
     assert any(row["nom"] == "DUPONT" and row["prenom"] == "ELISE" for row in result.rows)
 
 
+def test_parse_validation_three_line_file_handles_hyphenated_first_name(tmp_path):
+    source = tmp_path / "hyphen.csv"
+    source.write_text(
+        "DUPONT JEAN-PAUL\n"
+        "Payé par MARTIN Alice\n"
+        "Montant : 12 €\n",
+        encoding="utf-8",
+    )
+
+    result = parse_validation_three_line_file(source, output_dir=tmp_path)
+
+    assert result.rows == [
+        {
+            "nom": "DUPONT",
+            "prenom": "JEAN-PAUL",
+            "valide_par": "Alice MARTIN",
+            "montant": "12.00",
+        }
+    ]
+
+
+def test_parse_validation_three_line_file_skips_lines_until_next_name(tmp_path):
+    source = tmp_path / "extra_lines.csv"
+    source.write_text(
+        "DUPONT Elise\n"
+        "Payé par CLUB TEST\n"
+        "Montant : 45 €\n"
+        "Informations diverses\n"
+        "Autre ligne\n"
+        "MARTIN Paul\n"
+        "Payé\n"
+        "Montant : 30 €\n",
+        encoding="utf-8",
+    )
+
+    result = parse_validation_three_line_file(source, output_dir=tmp_path)
+
+    assert [row["nom"] for row in result.rows] == ["DUPONT", "MARTIN"]
+
+
 def _write_sample_csv(path: Path) -> None:
     path.write_text(
         "Ignoré\nIgnoré\nIgnoré\n"

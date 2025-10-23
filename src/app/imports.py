@@ -90,6 +90,11 @@ def _format_first_name(value: str) -> str:
 
 
 def _token_starts_with_two_uppercase(token: str) -> bool:
+    if "-" in token:
+        # Hyphenated first names (e.g. "JEAN-PAUL") should not be merged into the
+        # last name even if they appear in uppercase in the source document.
+        return False
+
     letters = [char for char in token if char.isalpha()]
     if len(letters) < 2:
         return False
@@ -231,6 +236,12 @@ def parse_validation_three_line_file(
             }
         )
         i += 3
+
+        # Ignore any trailing lines linked to the current member until the
+        # next "Nom Prenom" line is found.  Some exports insert additional
+        # informational rows that should be skipped entirely.
+        while i < len(raw_lines) and not NAME_AT_START.search(raw_lines[i]):
+            i += 1
         continue
 
     columns = ["nom", "prenom", "valide_par", "montant"]
