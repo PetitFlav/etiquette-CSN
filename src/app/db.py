@@ -190,24 +190,35 @@ def fetch_latest_contact(
 ) -> PersonContact | None:
     try:
         params: list[str] = [nom.strip(), prenom.strip()]
-        sql = "SELECT nom, prenom, email, montant FROM prints WHERE nom=? AND prenom=?"
+        base_sql = "SELECT nom, prenom, email, montant FROM prints WHERE nom=? AND prenom=?"
         if ddn and ddn.strip():
-            sql += " AND ddn=?"
+            base_sql += " AND ddn=?"
             params.append(ddn.strip())
-        sql += " AND email IS NOT NULL AND TRIM(email) != '' ORDER BY printed_at DESC LIMIT 1"
-        row = conn.execute(sql, params).fetchone()
+        params_tuple = tuple(params)
+
+        with_email_sql = (
+            base_sql + " AND email IS NOT NULL AND TRIM(email) != '' ORDER BY printed_at DESC LIMIT 1"
+        )
+        row_with_email = conn.execute(with_email_sql, params_tuple).fetchone()
+
+        latest_sql = base_sql + " ORDER BY printed_at DESC LIMIT 1"
+        latest_row = conn.execute(latest_sql, params_tuple).fetchone()
     except sqlite3.OperationalError:
         return None
 
-    if not row:
+    row_source = latest_row or row_with_email
+    if not row_source:
         return None
 
-    email = (row["email"] or "").strip()
-    montant = (row["montant"] or "").strip()
+    email_row = row_with_email or row_source
+    montant_row = latest_row or row_with_email
+
+    email = (email_row["email"] or "").strip()
+    montant = (montant_row["montant"] or "").strip()
 
     return PersonContact(
-        nom=(row["nom"] or "").strip() or nom.strip(),
-        prenom=(row["prenom"] or "").strip() or prenom.strip(),
+        nom=(row_source["nom"] or "").strip() or nom.strip(),
+        prenom=(row_source["prenom"] or "").strip() or prenom.strip(),
         email=email,
         montant=montant,
     )
