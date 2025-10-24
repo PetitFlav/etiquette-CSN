@@ -25,9 +25,11 @@ def _write_template(path: Path) -> None:
 <w:document xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main'>
   <w:body>
     <w:p><w:r><w:t>Attestation de paiement</w:t></w:r></w:p>
-    <w:p><w:r><w:t>Mr, Mme, Melle .......</w:t></w:r></w:p>
-    <w:p><w:r><w:t>pour la somme de .....€</w:t></w:r></w:p>
-    <w:p><w:r><w:t>Fait à Nantes, le </w:t></w:r></w:p>
+    <w:p><w:r><w:t>Nom : &lt;nom&gt;</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Prénom : &lt;prenom&gt;</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Montant : &lt;montant&gt;</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Saison : &lt;saison&gt;</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Date : &lt;DateDuJour&gt;</w:t></w:r></w:p>
   </w:body>
 </w:document>
 """
@@ -39,8 +41,6 @@ def test_generate_attestation_pdf(tmp_path: Path) -> None:
     template_path = tmp_path / "modele_attestation.docx"
     _write_template(template_path)
 
-    previous_template = attestations_module.ATTESTATION_TEMPLATE_PATH
-    attestations_module.ATTESTATION_TEMPLATE_PATH = template_path
     data = AttestationData(
         nom="DUPONT",
         prenom="ALICE",
@@ -51,10 +51,26 @@ def test_generate_attestation_pdf(tmp_path: Path) -> None:
         generated_at=datetime(2024, 1, 15, 12, 0, 0),
     )
 
-    try:
-        pdf_path = generate_attestation_pdf(tmp_path, data)
-    finally:
-        attestations_module.ATTESTATION_TEMPLATE_PATH = previous_template
+    def dummy_converter(docx_path: Path, pdf_path: Path) -> None:
+        with ZipFile(docx_path) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+        assert "Nom : DUPONT" in xml
+        assert "Prénom : DUPONT" not in xml  # ensure order preserved
+        assert "Prénom : ALICE" in xml
+        assert "Montant : 45 €" in xml
+        assert "Saison : 2025/2026" in xml
+        assert "Date : 15/01/2024" in xml
+        pdf_payload = (
+            "%PDF-1.4\nAttestation ALICE DUPONT\nMontant 45 €\n"
+        ).encode("cp1252", "ignore")
+        pdf_path.write_bytes(pdf_payload)
+
+    pdf_path = generate_attestation_pdf(
+        tmp_path,
+        data,
+        template_path=template_path,
+        converter=dummy_converter,
+    )
 
     expected_directory = tmp_path / "envoyees"
     assert pdf_path.parent == expected_directory
@@ -62,12 +78,14 @@ def test_generate_attestation_pdf(tmp_path: Path) -> None:
     assert pdf_path.exists()
     assert pdf_path.read_bytes().startswith(b"%PDF")
     pdf_bytes = pdf_path.read_bytes()
-    assert b"Mr, Mme, Melle ALICE DUPONT" in pdf_bytes
+    assert b"Attestation ALICE DUPONT" in pdf_bytes
     assert b"45 \x80" in pdf_bytes  # "45 €" en encodage CP1252
-    assert b"Fait \xe0 Nantes, le 15/01/2024" in pdf_bytes
 
 
 def test_generate_attestation_pdf_overwrites_existing_file(tmp_path: Path) -> None:
+    template_path = tmp_path / "modele_attestation.docx"
+    _write_template(template_path)
+
     data = AttestationData(
         nom="Dupont",
         prenom="Alice",
@@ -78,7 +96,17 @@ def test_generate_attestation_pdf_overwrites_existing_file(tmp_path: Path) -> No
         generated_at=datetime(2024, 1, 15, 12, 0, 0),
     )
 
-    first_path = generate_attestation_pdf(tmp_path, data)
+    def converter(docx_path: Path, pdf_path: Path) -> None:
+        with ZipFile(docx_path) as archive:
+            xml = archive.read("word/document.xml")
+        pdf_path.write_bytes(b"%PDF-1.4\n" + xml)
+
+    first_path = generate_attestation_pdf(
+        tmp_path,
+        data,
+        template_path=template_path,
+        converter=converter,
+    )
     first_bytes = first_path.read_bytes()
 
     updated_data = replace(
@@ -87,7 +115,12 @@ def test_generate_attestation_pdf_overwrites_existing_file(tmp_path: Path) -> No
         generated_at=datetime(2024, 2, 1, 9, 30, 0),
     )
 
-    second_path = generate_attestation_pdf(tmp_path, updated_data)
+    second_path = generate_attestation_pdf(
+        tmp_path,
+        updated_data,
+        template_path=template_path,
+        converter=converter,
+    )
 
     assert second_path == first_path
     assert second_path.read_bytes() != first_bytes

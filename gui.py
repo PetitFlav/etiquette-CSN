@@ -601,7 +601,11 @@ class App(tk.Tk):
                 )
 
                 try:
-                    pdf_path = generate_attestation_pdf(self.attestations_dir, data)
+                    pdf_path = generate_attestation_pdf(
+                        self.attestations_dir,
+                        data,
+                        config=self.cfg,
+                    )
                     self._attestation_sender(settings, data, pdf_path)
                 except Exception as exc:  # pragma: no cover - dépend des backends SMTP
                     failures.append(f"{data.prenom} {data.nom} : {exc}")

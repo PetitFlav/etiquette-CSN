@@ -4,15 +4,22 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.message import EmailMessage
+import html
 import smtplib
+import io
+import subprocess
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Callable, ContextManager, Iterable, Mapping
 from xml.etree import ElementTree as ET
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
 
 from jinja2 import Template
 
-from .config import ATTESTATION_TEMPLATE_PATH
+from .config import (
+    DEFAULT_ATTESTATION_TEMPLATE_PATH,
+    resolve_attestation_template_path,
+)
 from .crypto_utils import decrypt_secret, is_encrypted_secret
 
 
@@ -141,6 +148,96 @@ def _escape_pdf_text(value: str) -> str:
     return escaped
 
 
+class AttestationConversionError(RuntimeError):
+    """Raised when the DOCX to PDF conversion fails."""
+
+
+def _compute_attestation_season(data: AttestationData) -> str:
+    expire_text = (data.expire or "").strip()
+    if expire_text:
+        try:
+            expire_dt = datetime.strptime(expire_text, "%d/%m/%Y")
+        except ValueError:
+            pass
+        else:
+            return f"{expire_dt.year - 1}/{expire_dt.year}"
+
+    year = data.generated_at.year
+    return f"{year - 1}/{year}"
+
+
+def _render_attestation_docx(data: AttestationData, template_path: Path) -> bytes:
+    base_context = {
+        "nom": html.escape(data.nom or ""),
+        "prenom": html.escape(data.prenom or ""),
+        "montant": html.escape(_normalize_montant_value(data.montant)),
+        "saison": html.escape(_compute_attestation_season(data)),
+        "DateDuJour": html.escape(data.generated_at.strftime("%d/%m/%Y")),
+    }
+    context: dict[str, str] = {}
+    for key, value in base_context.items():
+        context[f"<{key}>"] = value
+        context[f"&lt;{key}&gt;"] = value
+
+    with ZipFile(template_path) as archive:
+        buffer = io.BytesIO()
+        with ZipFile(buffer, "w") as output:
+            for item in archive.infolist():
+                payload = archive.read(item.filename)
+                if item.filename.endswith(".xml"):
+                    try:
+                        text = payload.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = payload.decode("cp1252", "ignore")
+                    for placeholder, value in context.items():
+                        text = text.replace(placeholder, value)
+                    payload = text.encode("utf-8")
+
+                info = ZipInfo(item.filename)
+                info.date_time = item.date_time
+                info.compress_type = item.compress_type
+                info.external_attr = item.external_attr
+                info.internal_attr = item.internal_attr
+                info.flag_bits = item.flag_bits
+                output.writestr(info, payload)
+
+    return buffer.getvalue()
+
+
+def _convert_docx_to_pdf(docx_path: Path, pdf_path: Path) -> None:
+    command = [
+        "soffice",
+        "--headless",
+        "--convert-to",
+        "pdf:writer_pdf_Export",
+        "--outdir",
+        str(pdf_path.parent),
+        str(docx_path),
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:  # pragma: no cover - depends on system setup
+        raise AttestationConversionError(
+            "LibreOffice (soffice) est requis pour convertir les attestations en PDF"
+        ) from exc
+
+    if result.returncode != 0:
+        raise AttestationConversionError(
+            "Échec de la conversion DOCX->PDF (commande LibreOffice)"
+        )
+
+    generated = pdf_path.parent / f"{docx_path.stem}.pdf"
+    if generated != pdf_path:
+        if generated.exists():
+            generated.replace(pdf_path)
+    if not pdf_path.exists():
+        raise AttestationConversionError("Le fichier PDF attendu n'a pas été généré")
+
 def _docx_template_lines(data: AttestationData, template_path: Path | None) -> list[str]:
     """Return attestation lines rendered from the DOCX template.
 
@@ -148,7 +245,7 @@ def _docx_template_lines(data: AttestationData, template_path: Path | None) -> l
     """
 
     try:
-        path = template_path or ATTESTATION_TEMPLATE_PATH
+        path = template_path or DEFAULT_ATTESTATION_TEMPLATE_PATH
         with ZipFile(path) as archive:
             xml = archive.read("word/document.xml").decode("utf-8")
     except FileNotFoundError:
@@ -236,7 +333,7 @@ def _merge_additional_metadata(lines: list[str], data: AttestationData) -> list[
 
 
 def _build_pdf_stream_lines(data: AttestationData) -> Iterable[str]:
-    lines = _docx_template_lines(data, ATTESTATION_TEMPLATE_PATH)
+    lines = _docx_template_lines(data, DEFAULT_ATTESTATION_TEMPLATE_PATH)
 
     if not lines:
         lines = _fallback_template_lines(data)
@@ -319,15 +416,45 @@ def _compute_attestation_year_suffix(data: AttestationData) -> str:
     return f"{start_year}_{end_year}"
 
 
-def generate_attestation_pdf(directory: Path, data: AttestationData) -> Path:
+def generate_attestation_pdf(
+    directory: Path,
+    data: AttestationData,
+    *,
+    template_path: Path | None = None,
+    config: Mapping[str, str] | None = None,
+    converter: Callable[[Path, Path], None] | None = None,
+) -> Path:
     target_directory = directory / "envoyees"
     target_directory.mkdir(parents=True, exist_ok=True)
     nom_part = _sanitize_filename(data.nom.upper())
     prenom_part = _sanitize_filename(data.prenom.upper())
     year_suffix = _compute_attestation_year_suffix(data)
     filename = f"{nom_part}_{prenom_part}_attestation_{year_suffix}.pdf"
-    pdf_bytes = build_attestation_pdf_bytes(data)
     target = target_directory / filename
+    selected_template = template_path or resolve_attestation_template_path(config)
+
+    docx_bytes: bytes | None
+    try:
+        docx_bytes = _render_attestation_docx(data, selected_template)
+    except FileNotFoundError:
+        docx_bytes = None
+    except OSError:
+        docx_bytes = None
+
+    if docx_bytes is not None:
+        with TemporaryDirectory() as tmpdir:
+            docx_path = Path(tmpdir) / "attestation.docx"
+            docx_path.write_bytes(docx_bytes)
+            converter_fn = converter or _convert_docx_to_pdf
+            try:
+                converter_fn(docx_path, target)
+            except AttestationConversionError:
+                pass
+            else:
+                if target.exists():
+                    return target
+
+    pdf_bytes = build_attestation_pdf_bytes(data)
     target.write_bytes(pdf_bytes)
     return target
 

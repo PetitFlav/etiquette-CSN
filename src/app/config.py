@@ -22,7 +22,7 @@ SRC_DIR = ROOT / "src"
 DATA_DIR = ROOT / "data"
 SORTIES_DIR = DATA_DIR / "sorties"
 ATTESTATIONS_DIR = DATA_DIR / "attestations"
-ATTESTATION_TEMPLATE_PATH = DATA_DIR / "Attestation" / "modele_attestation.docx"
+DEFAULT_ATTESTATION_TEMPLATE_PATH = DATA_DIR / "Attestation" / "modele_attestation.docx"
 VALIDATION_EXPORT_DIR = DATA_DIR / "Validation"
 DB_PATH = DATA_DIR / "app.db"
 LAST_IMPORT_DIR = DATA_DIR / "last_import"
@@ -49,6 +49,7 @@ def load_config() -> Dict[str, str]:
         "default_expire": cfg.get("app", "default_expire", fallback=""),
         "auto_import_file": cfg.get("app", "auto_import_file", fallback="deja_imprimes.csv"),
         "ffessm_validators": cfg.get("app", "ffessm_validators", fallback=""),
+        "attestation_template_file": cfg.get("app", "fichier_attestation", fallback=""),
         "splash_image": cfg.get("app", "splash_image", fallback=""),
         "show_reset_db_button": cfg.get("app", "show_reset_db_button", fallback="false"),
         "rotate": cfg.get("impression", "rotate", fallback="0"),
@@ -78,13 +79,34 @@ def load_config() -> Dict[str, str]:
     }
 
 
+def resolve_attestation_template_path(config: Dict[str, str] | None = None) -> Path:
+    """Return the attestation template path configured by the user.
+
+    ``config`` can be provided to avoid reloading the ``config.ini`` file when
+    the caller already has the parsed values.  When no custom path is defined in
+    the configuration, the historical default template shipped with the
+    application is used.  Relative paths are resolved from the application root
+    directory to keep compatibility with the previous behaviour where the
+    template lived alongside ``config.ini``.
+    """
+
+    cfg = config or load_config()
+    configured = (cfg.get("attestation_template_file") or "").strip()
+    if configured:
+        candidate = Path(configured)
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        return candidate
+    return DEFAULT_ATTESTATION_TEMPLATE_PATH
+
+
 __all__ = [
     "ROOT",
     "SRC_DIR",
     "DATA_DIR",
     "SORTIES_DIR",
     "ATTESTATIONS_DIR",
-    "ATTESTATION_TEMPLATE_PATH",
+    "DEFAULT_ATTESTATION_TEMPLATE_PATH",
     "VALIDATION_EXPORT_DIR",
     "DB_PATH",
     "LAST_IMPORT_DIR",
@@ -92,4 +114,5 @@ __all__ = [
     "DEFAULT_EXPIRATION",
     "CONFIG_PATH",
     "load_config",
+    "resolve_attestation_template_path",
 ]
