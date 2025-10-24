@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 import sqlite3
@@ -57,12 +58,39 @@ def test_generate_attestation_pdf(tmp_path: Path) -> None:
 
     expected_directory = tmp_path / "envoyees"
     assert pdf_path.parent == expected_directory
+    assert pdf_path.name == "DUPONT_ALICE_attestation_2025_2026.pdf"
     assert pdf_path.exists()
     assert pdf_path.read_bytes().startswith(b"%PDF")
     pdf_bytes = pdf_path.read_bytes()
     assert b"Mr, Mme, Melle ALICE DUPONT" in pdf_bytes
     assert b"45 \x80" in pdf_bytes  # "45 €" en encodage CP1252
     assert b"Fait \xe0 Nantes, le 15/01/2024" in pdf_bytes
+
+
+def test_generate_attestation_pdf_overwrites_existing_file(tmp_path: Path) -> None:
+    data = AttestationData(
+        nom="Dupont",
+        prenom="Alice",
+        email="alice@example.com",
+        montant="45",
+        expire="31/12/2026",
+        date_de_naissance="01/01/1990",
+        generated_at=datetime(2024, 1, 15, 12, 0, 0),
+    )
+
+    first_path = generate_attestation_pdf(tmp_path, data)
+    first_bytes = first_path.read_bytes()
+
+    updated_data = replace(
+        data,
+        montant="50",
+        generated_at=datetime(2024, 2, 1, 9, 30, 0),
+    )
+
+    second_path = generate_attestation_pdf(tmp_path, updated_data)
+
+    assert second_path == first_path
+    assert second_path.read_bytes() != first_bytes
 
 
 def test_load_attestation_settings_defaults() -> None:
