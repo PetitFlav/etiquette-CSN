@@ -5,8 +5,17 @@ from pathlib import Path
 import sqlite3
 from zipfile import ZipFile
 
+import pytest
+
 import src.app.attestations as attestations_module
-from src.app.attestations import AttestationData, generate_attestation_pdf, load_attestation_settings
+from src.app.attestations import (
+    AttestationData,
+    SMTPSettings,
+    _smtp_connection,
+    generate_attestation_pdf,
+    load_attestation_settings,
+)
+from src.app.crypto_utils import encrypt_secret
 from src.app.db import fetch_latest_contact
 
 
@@ -46,6 +55,8 @@ def test_generate_attestation_pdf(tmp_path: Path) -> None:
     finally:
         attestations_module.ATTESTATION_TEMPLATE_PATH = previous_template
 
+    expected_directory = tmp_path / "envoyees"
+    assert pdf_path.parent == expected_directory
     assert pdf_path.exists()
     assert pdf_path.read_bytes().startswith(b"%PDF")
     pdf_bytes = pdf_path.read_bytes()
@@ -62,6 +73,82 @@ def test_load_attestation_settings_defaults() -> None:
     assert settings.sender == "noreply@example.com"
     assert settings.port == 587
     assert settings.use_tls is True
+
+
+def test_load_attestation_settings_decrypts_encrypted_password() -> None:
+    encrypted = encrypt_secret("monsecret")
+    cfg = {
+        "smtp_host": "smtp.example.com",
+        "smtp_sender": "noreply@example.com",
+        "smtp_user": "user",
+        "smtp_password": encrypted,
+    }
+
+    settings = load_attestation_settings(cfg)
+
+    assert settings.password == "monsecret"
+
+
+def test_smtp_connection_decrypts_password_before_login(monkeypatch) -> None:
+    encrypted = encrypt_secret("monsecret")
+    settings = SMTPSettings(
+        host="smtp.example.com",
+        port=587,
+        sender="noreply@example.com",
+        username="user",
+        password=encrypted,
+        use_tls=False,
+        use_ssl=False,
+    )
+
+    login_calls: list[tuple[str, str]] = []
+
+    class DummySMTP:
+        def __init__(self, host, port, timeout):
+            assert host == "smtp.example.com"
+            assert port == 587
+            assert timeout == settings.timeout
+
+        def login(self, username, password):
+            login_calls.append((username, password))
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(attestations_module.smtplib, "SMTP", DummySMTP)
+
+    with _smtp_connection(settings):
+        pass
+
+    assert login_calls == [("user", "monsecret")]
+
+
+def test_smtp_connection_raises_for_invalid_encrypted_password(monkeypatch) -> None:
+    settings = SMTPSettings(
+        host="smtp.example.com",
+        port=587,
+        sender="noreply@example.com",
+        username="user",
+        password="enc:###",  # invalide
+        use_tls=False,
+        use_ssl=False,
+    )
+
+    class DummySMTP:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def login(self, username, password):  # pragma: no cover - should not be called
+            raise AssertionError("login should not be called when password is invalid")
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(attestations_module.smtplib, "SMTP", DummySMTP)
+
+    with pytest.raises(RuntimeError, match="Mot de passe SMTP chiffré invalide"):
+        with _smtp_connection(settings):
+            pass
 
 
 def test_fetch_latest_contact_prefers_most_recent_email() -> None:

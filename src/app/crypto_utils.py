@@ -41,7 +41,9 @@ def decrypt_secret(value: str) -> str:
 
     token = value.split(":", 1)[1]
     try:
-        payload = base64.urlsafe_b64decode(token.encode("ascii"))
+        payload = base64.b64decode(
+            token.encode("ascii"), altchars=b"-_", validate=True
+        )
     except (binascii.Error, ValueError) as exc:  # pragma: no cover - depends on token
         raise ValueError("Encrypted secret is malformed") from exc
 
