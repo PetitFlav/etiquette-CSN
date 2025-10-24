@@ -301,13 +301,31 @@ def build_attestation_pdf_bytes(data: AttestationData) -> bytes:
     return bytes(pdf)
 
 
+def _compute_attestation_year_suffix(data: AttestationData) -> str:
+    expire_text = (data.expire or "").strip()
+    if expire_text:
+        try:
+            expire_dt = datetime.strptime(expire_text, "%d/%m/%Y")
+        except ValueError:
+            expire_dt = None
+        if expire_dt is not None:
+            start_year = expire_dt.year - 1
+            end_year = expire_dt.year
+            return f"{start_year}_{end_year}"
+
+    fallback_year = data.generated_at.year
+    start_year = fallback_year - 1
+    end_year = fallback_year
+    return f"{start_year}_{end_year}"
+
+
 def generate_attestation_pdf(directory: Path, data: AttestationData) -> Path:
     target_directory = directory / "envoyees"
     target_directory.mkdir(parents=True, exist_ok=True)
-    timestamp = data.generated_at.strftime("%Y%m%d-%H%M%S")
     nom_part = _sanitize_filename(data.nom.upper())
     prenom_part = _sanitize_filename(data.prenom.upper())
-    filename = f"attestation_{prenom_part}_{nom_part}_{timestamp}.pdf"
+    year_suffix = _compute_attestation_year_suffix(data)
+    filename = f"{nom_part}_{prenom_part}_attestation_{year_suffix}.pdf"
     pdf_bytes = build_attestation_pdf_bytes(data)
     target = target_directory / filename
     target.write_bytes(pdf_bytes)
