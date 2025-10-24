@@ -17,12 +17,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+import configparser
 import sqlite3
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from src.app.config import (
     ATTESTATIONS_DIR,
+    CONFIG_PATH,
     DEFAULT_EXPIRATION,
     DB_PATH,
     ROOT,
@@ -57,9 +59,11 @@ from src.app.attestations import (
     generate_attestation_pdf,
     load_attestation_settings,
     send_attestation_email,
+    test_smtp_connection,
 )
 from src.app.printing import print_ql570_direct
 from src.app.zpl import ecrire_sorties, genere_zpl
+from src.app.crypto_utils import decrypt_secret, encrypt_secret, is_encrypted_secret
 
 
 __all__ = ["App"]
@@ -125,6 +129,7 @@ class App(tk.Tk):
 
         self.after_idle(self._show_splash_screen)
         self._load_last_import_if_available()
+        self.after_idle(self._check_smtp_configuration)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -211,7 +216,9 @@ class App(tk.Tk):
         self.tree.bind("<Button-1>", self.on_tree_click)
 
         self.status = tk.StringVar(value="Prêt")
-        ttk.Label(self, textvariable=self.status, anchor=tk.W).pack(fill=tk.X, padx=8, pady=(0, 6))
+        self.status_label = tk.Label(self, textvariable=self.status, anchor=tk.W)
+        self.status_label.pack(fill=tk.X, padx=8, pady=(0, 6))
+        self._default_status_color = self.status_label.cget("fg")
 
         self._update_headers()
 
@@ -231,6 +238,71 @@ class App(tk.Tk):
                 # Older Tk versions (< 8.7) do not support per-column colors. Fall back to
                 # classic colouring so that the UI stays functional instead of crashing.
                 self.tree.tag_configure(tag, foreground=color)
+
+    def _set_status_message(self, message: str, *, color: str | None = None):
+        self.status.set(message)
+        if color:
+            self.status_label.configure(fg=color)
+        else:
+            self.status_label.configure(fg=self._default_status_color)
+
+    def _check_smtp_configuration(self):
+        host = (self.cfg.get("smtp_host") or "").strip()
+        sender = (self.cfg.get("smtp_sender") or "").strip()
+        if not host or not sender:
+            return
+
+        settings = load_attestation_settings(self.cfg)
+        password_value = self.cfg.get("smtp_password") or ""
+
+        attempts: list[tuple[str, bool]] = []
+        if password_value:
+            if is_encrypted_secret(password_value):
+                try:
+                    decrypted = decrypt_secret(password_value)
+                    attempts.append((decrypted, True))
+                except ValueError:
+                    attempts.append((password_value, False))
+            else:
+                attempts.append((password_value, False))
+        else:
+            attempts.append(("", False))
+
+        success = False
+        used_plaintext_password = False
+        for candidate, came_from_encrypted in attempts:
+            settings.password = candidate
+            if test_smtp_connection(settings):
+                success = True
+                used_plaintext_password = not came_from_encrypted and bool(password_value)
+                break
+
+        if success:
+            green = self._status_colors.get("status-green", "#27ae60")
+            self._set_status_message("Config Email OK", color=green)
+            if used_plaintext_password:
+                encrypted_password = encrypt_secret(password_value)
+                self._persist_encrypted_smtp_password(encrypted_password)
+        else:
+            red = self._status_colors.get("status-red", "#c0392b")
+            self._set_status_message("Config Email KO", color=red)
+
+    def _persist_encrypted_smtp_password(self, encrypted_password: str):
+        self.cfg["smtp_password"] = encrypted_password
+        if not CONFIG_PATH.exists():
+            return
+
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(CONFIG_PATH, encoding="utf-8")
+            if not parser.has_section("email"):
+                parser.add_section("email")
+            parser.set("email", "smtp_password", encrypted_password)
+            with CONFIG_PATH.open("w", encoding="utf-8") as stream:
+                parser.write(stream)
+        except Exception:
+            # L'échec de la persistance ne doit pas bloquer l'application.
+            pass
 
     def _load_latest_validation_export(self, *, silent: bool = True):
         try:
@@ -1000,7 +1072,9 @@ class App(tk.Tk):
             tags = (tag,) if tag else ()
             insert_kwargs = {"text": "", "values": values, "tags": tags}
             self.tree.insert("", tk.END, iid=str(idx), **insert_kwargs)
-        self.status.set(f"Affichées: {len(self.view_rows)} (sélectionnées: {len(self.checked)})")
+        self._set_status_message(
+            f"Affichées: {len(self.view_rows)} (sélectionnées: {len(self.checked)})"
+        )
 
     def on_tree_click(self, event):
         # Clic sur la colonne "sel" (#1) pour cocher/décocher
@@ -1128,7 +1202,7 @@ class App(tk.Tk):
         )
 
     def toast(self, msg: str):
-        self.status.set(msg)
+        self._set_status_message(msg)
 
 
 if __name__ == "__main__":
