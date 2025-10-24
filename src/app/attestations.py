@@ -376,6 +376,21 @@ def _smtp_context_wrapper(settings: SMTPSettings):
     return _smtp_connection(settings)
 
 
+def test_smtp_connection(
+    settings: SMTPSettings,
+    *,
+    smtp_factory: Callable[[SMTPSettings], ContextManager[smtplib.SMTP]] | None = None,
+) -> bool:
+    """Attempt to establish an SMTP connection with the provided settings."""
+
+    factory = smtp_factory or _smtp_context_wrapper
+    try:
+        with factory(settings):
+            return True
+    except Exception:  # pragma: no cover - depends on SMTP backend
+        return False
+
+
 __all__ = [
     "AttestationData",
     "SMTPSettings",
@@ -384,4 +399,5 @@ __all__ = [
     "generate_attestation_pdf",
     "load_attestation_settings",
     "send_attestation_email",
+    "test_smtp_connection",
 ]
