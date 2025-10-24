@@ -13,6 +13,7 @@ from zipfile import ZipFile
 from jinja2 import Template
 
 from .config import ATTESTATION_TEMPLATE_PATH
+from .crypto_utils import decrypt_secret, is_encrypted_secret
 
 
 DEFAULT_SUBJECT = "Attestation de paiement - {{ prenom }} {{ nom }}"
@@ -98,7 +99,13 @@ def load_attestation_settings(config: Mapping[str, str]) -> SMTPSettings:
     sender = (config.get("smtp_sender", "") or "").strip()
     port = _parse_int(config.get("smtp_port"), default=0)
     username = (config.get("smtp_user", "") or "").strip()
-    password = config.get("smtp_password", "") or ""
+    raw_password = config.get("smtp_password", "") or ""
+    password = raw_password.strip()
+    if password and is_encrypted_secret(password):
+        try:
+            password = decrypt_secret(password)
+        except ValueError as exc:
+            raise ValueError("Mot de passe SMTP chiffré invalide") from exc
     timeout = float(_parse_int(config.get("smtp_timeout"), default=30))
     use_tls = _parse_bool(config.get("smtp_use_tls"), default=True)
     use_ssl = _parse_bool(config.get("smtp_use_ssl"), default=False)
@@ -295,13 +302,14 @@ def build_attestation_pdf_bytes(data: AttestationData) -> bytes:
 
 
 def generate_attestation_pdf(directory: Path, data: AttestationData) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
+    target_directory = directory / "envoyees"
+    target_directory.mkdir(parents=True, exist_ok=True)
     timestamp = data.generated_at.strftime("%Y%m%d-%H%M%S")
     nom_part = _sanitize_filename(data.nom.upper())
     prenom_part = _sanitize_filename(data.prenom.upper())
     filename = f"attestation_{prenom_part}_{nom_part}_{timestamp}.pdf"
     pdf_bytes = build_attestation_pdf_bytes(data)
-    target = directory / filename
+    target = target_directory / filename
     target.write_bytes(pdf_bytes)
     return target
 
@@ -344,7 +352,13 @@ def _smtp_connection(settings: SMTPSettings):
         if not settings.use_ssl and settings.use_tls:
             smtp.starttls()
         if settings.username:
-            smtp.login(settings.username, settings.password)
+            password = settings.password
+            if password and is_encrypted_secret(password):
+                try:
+                    password = decrypt_secret(password)
+                except ValueError as exc:
+                    raise RuntimeError("Mot de passe SMTP chiffré invalide") from exc
+            smtp.login(settings.username, password)
         yield smtp
     finally:  # pragma: no cover - best effort shutdown
         try:
