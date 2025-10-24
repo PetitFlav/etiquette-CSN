@@ -8,3 +8,4 @@ Output/
 data/*.db
 data/sorties/
 data/Attestation/modele_attestation.docx
+attestation_modele.docx
