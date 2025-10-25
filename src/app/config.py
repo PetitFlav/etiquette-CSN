@@ -64,14 +64,14 @@ def load_config() -> Dict[str, str]:
         "attestation_subject": cfg.get(
             "email",
             "attestation_subject",
-            fallback="Attestation de paiement - {{ prenom }} {{ nom }}",
+            fallback="Attestation de paiement Adhesion CSN - {{ prenom }} {{ nom }}",
         ),
         "attestation_body": cfg.get(
             "email",
             "attestation_body",
             fallback=(
                 "Bonjour {{ prenom }},\n\n"
-                "Veuillez trouver ci-joint votre attestation de paiement.\n"
+                "Veuillez trouver ci-joint votre attestation de paiement d'adhésion au CSN.\n"
                 "Montant réglé : {{ montant }}.\n\n"
                 "Cordialement."
             ),

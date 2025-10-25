@@ -24,10 +24,10 @@ from .config import (
 from .crypto_utils import decrypt_secret, is_encrypted_secret
 
 
-DEFAULT_SUBJECT = "Attestation de paiement - {{ prenom }} {{ nom }}"
+DEFAULT_SUBJECT = "Attestation de paiement Adhesion CSN - {{ prenom }} {{ nom }}"
 DEFAULT_BODY = (
     "Bonjour {{ prenom }},\n\n"
-    "Veuillez trouver ci-joint votre attestation de paiement.\n"
+    "Veuillez trouver ci-joint votre attestation de paiement d'adhésion au CSN.\n"
     "Montant réglé : {{ montant }}.\n\n"
     "Cordialement."
 )
