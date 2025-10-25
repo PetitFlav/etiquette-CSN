@@ -32,6 +32,20 @@ CREATE INDEX IF NOT EXISTS ix_prints_person_expire ON prints(nom, prenom, ddn, e
 CREATE INDEX IF NOT EXISTS ix_prints_person        ON prints(nom, prenom, ddn);
 CREATE INDEX IF NOT EXISTS ix_prints_status_time   ON prints(status, printed_at);
 
+CREATE TABLE IF NOT EXISTS attestation_emails (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nom TEXT NOT NULL,
+  prenom TEXT NOT NULL,
+  ddn TEXT DEFAULT '',
+  expire TEXT,
+  email TEXT,
+  montant TEXT,
+  sent_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_attestation_person ON attestation_emails(nom, prenom, ddn);
+CREATE INDEX IF NOT EXISTS ix_attestation_sent   ON attestation_emails(sent_at);
+
 -- ✅ vue agrégée par personne (Nom+Prénom+DDN), TOUTES expirations
 --    cnt = nb d'impressions réelles (status='printed')
 --    last_print = dernière date d'impression réelle
@@ -58,6 +72,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         cn.executescript(SCHEMA)
         _ensure_email_column(cn)
         _ensure_montant_column(cn)
+        _ensure_attestation_table(cn)
 
 def sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
@@ -88,6 +103,31 @@ def _ensure_montant_column(conn: sqlite3.Connection) -> None:
     columns = _ensure_columns(conn)
     if columns and "montant" not in columns:
         conn.execute("ALTER TABLE prints ADD COLUMN montant TEXT")
+
+
+def _ensure_attestation_table(conn: sqlite3.Connection) -> None:
+    """Make sure the attestation email log table exists."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS attestation_emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nom TEXT NOT NULL,
+            prenom TEXT NOT NULL,
+            ddn TEXT DEFAULT '',
+            expire TEXT,
+            email TEXT,
+            montant TEXT,
+            sent_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_attestation_person ON attestation_emails(nom, prenom, ddn)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_attestation_sent ON attestation_emails(sent_at)"
+    )
 
 def already_printed(conn: sqlite3.Connection, nom: str, prenom: str, ddn: str, expire: str) -> bool:
     cur = conn.execute(
@@ -132,6 +172,38 @@ def record_print(
     return True
 
 
+def record_attestation_email(
+    conn: sqlite3.Connection,
+    nom: str,
+    prenom: str,
+    ddn: str | None,
+    expire: str | None,
+    email: str | None,
+    montant: str | None,
+    sent_at: datetime | None = None,
+) -> bool:
+    """Persist an attestation email send event."""
+
+    _ensure_attestation_table(conn)
+    payload_sent_at = (sent_at or datetime.utcnow()).isoformat()
+    conn.execute(
+        """
+        INSERT INTO attestation_emails(nom, prenom, ddn, expire, email, montant, sent_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (nom or "").strip(),
+            (prenom or "").strip(),
+            (ddn or "").strip(),
+            (expire or "").strip(),
+            (email or "").strip(),
+            (montant or "").strip(),
+            payload_sent_at,
+        ),
+    )
+    return True
+
+
 def update_person_montant(
     conn: sqlite3.Connection,
     nom: str,
@@ -167,6 +239,32 @@ class PersonContact:
     prenom: str
     email: str
     montant: str = ""
+
+
+def load_last_attestation_by_person(conn: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
+    """Return the latest attestation send timestamp grouped by person."""
+
+    _ensure_attestation_table(conn)
+    cur = conn.execute(
+        """
+        SELECT
+            nom,
+            prenom,
+            COALESCE(ddn, '') AS ddn,
+            MAX(sent_at) AS last_sent
+        FROM attestation_emails
+        GROUP BY nom, prenom, COALESCE(ddn, '')
+        """
+    )
+    result: dict[tuple[str, str, str], str] = {}
+    for row in cur.fetchall():
+        key = (
+            (row["nom"] or "").strip().lower(),
+            (row["prenom"] or "").strip().lower(),
+            (row["ddn"] or "").strip(),
+        )
+        result[key] = (row["last_sent"] or "").strip()
+    return result
 
 
 def person_stats(conn: sqlite3.Connection, nom: Optional[str] = None, prenom: Optional[str] = None) -> Iterable[sqlite3.Row]:

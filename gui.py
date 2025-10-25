@@ -31,7 +31,14 @@ from src.app.config import (
     SORTIES_DIR,
     load_config,
 )
-from src.app.db import connect, fetch_latest_contact, init_db, record_print
+from src.app.db import (
+    connect,
+    fetch_latest_contact,
+    init_db,
+    load_last_attestation_by_person,
+    record_attestation_email,
+    record_print,
+)
 from src.app.imports import (
     build_ddn_lookup_from_rows,
     import_already_printed_csv,
@@ -187,13 +194,26 @@ class App(tk.Tk):
         mid = ttk.Frame(self)
         mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        cols = ("sel", "Nom", "Prénom", "Derniere", "Compteur", "ErreurValide")
+        cols = (
+            "sel",
+            "Nom",
+            "Prénom",
+            "Derniere",
+            "Compteur",
+            "AttestationEnvoyee",
+            "ErreurValide",
+        )
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
         self.tree.heading("sel", text="✓", command=self.toggle_all)
         self.tree.heading("Nom", text="Nom", command=lambda: self.sort_by("Nom"))
         self.tree.heading("Prénom", text="Prénom", command=lambda: self.sort_by("Prénom"))
         self.tree.heading("Derniere", text="Dernière impression")
         self.tree.heading("Compteur", text="# Impressions")
+        self.tree.heading(
+            "AttestationEnvoyee",
+            text="Date envoi attestation",
+            command=lambda: self.sort_by("AttestationEnvoyee"),
+        )
         self.tree.heading(
             "ErreurValide",
             text="Erreur valide",
@@ -205,6 +225,7 @@ class App(tk.Tk):
         self.tree.column("Prénom", width=240)
         self.tree.column("Derniere", width=200, anchor=tk.CENTER)
         self.tree.column("Compteur", width=130, anchor=tk.E)
+        self.tree.column("AttestationEnvoyee", width=200, anchor=tk.CENTER)
         self.tree.column("ErreurValide", width=120, anchor=tk.CENTER, stretch=False)
 
         self.tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
@@ -561,63 +582,82 @@ class App(tk.Tk):
             return
 
         try:
-            for row in selected:
-                nom = (row.get("Nom") or "").strip()
-                prenom = (row.get("Prénom") or "").strip()
-                ddn = (row.get("Date_de_naissance") or "").strip()
-                expire = (row.get("Expire_le") or "").strip()
-                contact = fetch_latest_contact(cn, nom, prenom, ddn)
-                email = ""
-                nom_bdd = nom
-                prenom_bdd = prenom
-                montant = ""
-                if contact:
-                    nom_bdd = contact.nom or nom
-                    prenom_bdd = contact.prenom or prenom
-                    email = contact.email.strip()
-                    montant = (contact.montant or "").strip()
+            with cn:
+                for row in selected:
+                    nom = (row.get("Nom") or "").strip()
+                    prenom = (row.get("Prénom") or "").strip()
+                    ddn = (row.get("Date_de_naissance") or "").strip()
+                    expire = (row.get("Expire_le") or "").strip()
+                    contact = fetch_latest_contact(cn, nom, prenom, ddn)
+                    email = ""
+                    nom_bdd = nom
+                    prenom_bdd = prenom
+                    montant = ""
+                    if contact:
+                        nom_bdd = contact.nom or nom
+                        prenom_bdd = contact.prenom or prenom
+                        email = contact.email.strip()
+                        montant = (contact.montant or "").strip()
 
-                if not email:
-                    email = (row.get("Email") or "").strip()
+                    if not email:
+                        email = (row.get("Email") or "").strip()
 
-                if not email:
-                    failures.append(f"{nom} {prenom} : adresse e-mail introuvable dans la base.")
-                    continue
+                    if not email:
+                        failures.append(f"{nom} {prenom} : adresse e-mail introuvable dans la base.")
+                        continue
 
-                if not montant:
-                    montant = str(row.get("Montant") or "").strip()
+                    if not montant:
+                        montant = str(row.get("Montant") or "").strip()
 
-                if not montant:
-                    failures.append(f"{nom} {prenom} : montant introuvable dans la base ou le fichier.")
-                    continue
+                    if not montant:
+                        failures.append(f"{nom} {prenom} : montant introuvable dans la base ou le fichier.")
+                        continue
 
-                data = AttestationData(
-                    nom=nom_bdd or nom,
-                    prenom=prenom_bdd or prenom,
-                    email=email,
-                    montant=montant,
-                    expire=expire,
-                    date_de_naissance=ddn,
-                )
-
-                try:
-                    pdf_path = generate_attestation_pdf(
-                        self.attestations_dir,
-                        data,
-                        config=self.cfg,
+                    data = AttestationData(
+                        nom=nom_bdd or nom,
+                        prenom=prenom_bdd or prenom,
+                        email=email,
+                        montant=montant,
+                        expire=expire,
+                        date_de_naissance=ddn,
                     )
-                    self._attestation_sender(settings, data, pdf_path)
-                except Exception as exc:  # pragma: no cover - dépend des backends SMTP
-                    failures.append(f"{data.prenom} {data.nom} : {exc}")
-                    continue
 
-                successes += 1
+                    try:
+                        pdf_path = generate_attestation_pdf(
+                            self.attestations_dir,
+                            data,
+                            config=self.cfg,
+                        )
+                        self._attestation_sender(settings, data, pdf_path)
+                    except Exception as exc:  # pragma: no cover - dépend des backends SMTP
+                        failures.append(f"{data.prenom} {data.nom} : {exc}")
+                        continue
+
+                    try:
+                        record_attestation_email(
+                            cn,
+                            data.nom,
+                            data.prenom,
+                            ddn,
+                            expire,
+                            data.email,
+                            data.montant,
+                        )
+                    except Exception as exc:
+                        failures.append(
+                            f"{data.prenom} {data.nom} : attestation envoyée mais enregistrement BDD impossible ({exc})"
+                        )
+                        continue
+
+                    successes += 1
         finally:
             cn.close()
             self.config(cursor=old_cursor)
             self.update_idletasks()
 
         if successes:
+            self.refresh_from_db_stats()
+            self.apply_filter()
             self.toast(f"{successes} attestation(s) envoyée(s)")
 
         if failures and successes:
@@ -756,6 +796,11 @@ class App(tk.Tk):
             "Compteur",
             text=label("Compteur", "# Impressions"),
             command=lambda: self.sort_by("Compteur"),
+        )
+        self.tree.heading(
+            "AttestationEnvoyee",
+            text=label("AttestationEnvoyee", "Date envoi attestation"),
+            command=lambda: self.sort_by("AttestationEnvoyee"),
         )
         self.tree.heading(
             "ErreurValide",
@@ -994,6 +1039,12 @@ class App(tk.Tk):
                 per_expire[keyx] = int(row["cnt_exp"] or 0)
             self.per_expire_count = per_expire  # <-- stocké pour apply_filter()
 
+            attestation_lookup: dict[tuple[str, str, str], str] = {}
+            try:
+                attestation_lookup = load_last_attestation_by_person(cn)
+            except sqlite3.OperationalError:
+                attestation_lookup = {}
+
             # ---- Injection sur les lignes importées ----
             for r in self.rows:
                 pkey = (
@@ -1004,6 +1055,7 @@ class App(tk.Tk):
                 last, cnt_total = stats_person.get(pkey, (None, 0))
                 r["Derniere"] = last or ""
                 r["Compteur"] = cnt_total
+                r["AttestationEnvoyee"] = attestation_lookup.get(pkey, "")
 
             self._apply_validation_indicators(cn)
         finally:
@@ -1069,6 +1121,7 @@ class App(tk.Tk):
                 str(r.get("Prénom", "") or ""),
                 self._fmt_dt(r.get("Derniere")) or "",
                 str(r.get("Compteur", 0) or 0),
+                self._fmt_dt(r.get("AttestationEnvoyee")) or "",
                 self._fmt_erreur_valide(r.get("ErreurValide")),
             )
             status_key = self._normalize_erreur_valide(r.get("ErreurValide"))
@@ -1118,7 +1171,7 @@ class App(tk.Tk):
 
         def keyfunc(r: dict):
             v = r.get(col, "")
-            if col == "Derniere" and v:
+            if col in {"Derniere", "AttestationEnvoyee"} and v:
                 try:
                     return datetime.fromisoformat(v)
                 except Exception:
