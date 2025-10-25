@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from email.message import EmailMessage
+from email.utils import format_datetime
 import html
 import smtplib
 import io
@@ -459,11 +460,18 @@ def generate_attestation_pdf(
     return target
 
 
+def _format_message_date(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return format_datetime(value)
+
+
 def build_email_message(settings: SMTPSettings, data: AttestationData, pdf_path: Path) -> EmailMessage:
     message = EmailMessage()
     message["Subject"] = settings.render_subject(data)
     message["From"] = settings.sender
     message["To"] = data.email
+    message["Date"] = _format_message_date(data.generated_at)
     message.set_content(settings.render_body(data))
 
     payload = pdf_path.read_bytes()
