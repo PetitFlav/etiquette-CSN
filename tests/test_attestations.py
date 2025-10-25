@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 import sqlite3
 from zipfile import ZipFile
@@ -13,6 +14,7 @@ from src.app.attestations import (
     AttestationData,
     SMTPSettings,
     _smtp_connection,
+    build_email_message,
     generate_attestation_pdf,
     load_attestation_settings,
 )
@@ -148,6 +150,33 @@ def test_load_attestation_settings_decrypts_encrypted_password() -> None:
     settings = load_attestation_settings(cfg)
 
     assert settings.password == "monsecret"
+
+
+def test_build_email_message_sets_single_date_header(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "attestation.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    settings = SMTPSettings(host="smtp.example.com", port=587, sender="noreply@example.com")
+    data = AttestationData(
+        nom="Dupont",
+        prenom="Alice",
+        email="alice@example.com",
+        montant="45",
+        generated_at=datetime(2024, 1, 15, 12, 0, 0),
+    )
+
+    message = build_email_message(settings, data, pdf_path)
+
+    dates = message.get_all("Date")
+    assert dates is not None
+    assert len(dates) == 1
+
+    parsed_date = parsedate_to_datetime(dates[0])
+    assert parsed_date is not None
+    assert parsed_date.tzinfo is not None
+    assert parsed_date.year == data.generated_at.year
+    assert parsed_date.month == data.generated_at.month
+    assert parsed_date.day == data.generated_at.day
 
 
 def test_smtp_connection_decrypts_password_before_login(monkeypatch) -> None:
