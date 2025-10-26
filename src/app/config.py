@@ -24,6 +24,7 @@ SORTIES_DIR = DATA_DIR / "sorties"
 ATTESTATIONS_DIR = DATA_DIR / "attestations"
 DEFAULT_ATTESTATION_TEMPLATE_PATH = DATA_DIR / "Attestation" / "modele_attestation.docx"
 VALIDATION_EXPORT_DIR = DATA_DIR / "Validation"
+PREINSCRIPTION_DIR = DATA_DIR / "pre-inscrits"
 DB_PATH = DATA_DIR / "app.db"
 LAST_IMPORT_DIR = DATA_DIR / "last_import"
 LAST_IMPORT_METADATA = DATA_DIR / "last_import.json"
@@ -108,6 +109,7 @@ __all__ = [
     "ATTESTATIONS_DIR",
     "DEFAULT_ATTESTATION_TEMPLATE_PATH",
     "VALIDATION_EXPORT_DIR",
+    "PREINSCRIPTION_DIR",
     "DB_PATH",
     "LAST_IMPORT_DIR",
     "LAST_IMPORT_METADATA",

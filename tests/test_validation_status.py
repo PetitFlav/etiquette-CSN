@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from src.app import validation as validation_module
 from src.app.validation import (
     DbExpiration,
     build_validation_lookup,
@@ -44,6 +45,36 @@ def test_load_validation_export_returns_rows(tmp_path):
         {"nom": "DUPONT", "prenom": "ALICE", "valide_par": "Jean", "montant": "45"},
         {"nom": "DURAND", "prenom": "Bob", "valide_par": "Marie", "montant": ""},
     ]
+
+
+def test_load_validation_export_adds_preinscription_amount(tmp_path, monkeypatch):
+    path = tmp_path / "sample_validation.csv"
+    df = pd.DataFrame(
+        [
+            {"nom": "Dupont", "prenom": "Alice", "valide_par": "Jean", "montant": "45"},
+            {"nom": "Durand", "prenom": "Bob", "valide_par": "Marie", "montant": ""},
+            {"nom": "Martin", "prenom": "Clara", "valide_par": "Paul", "montant": "20"},
+        ]
+    )
+    df.to_csv(path, sep=";", index=False, encoding="utf-8")
+
+    pre_dir = tmp_path / "pre-inscrits"
+    pre_dir.mkdir()
+    pre_df = pd.DataFrame(
+        [
+            {"nom adhérent": "DUPONT", "prénom adhérent": "ALICE", "Montant tarif": "30,50"},
+            {"nom adhérent": "Durand", "prénom adhérent": "BOB", "Montant tarif": "10"},
+        ]
+    )
+    pre_df.to_csv(pre_dir / "preinscriptions.csv", sep=";", index=False, encoding="utf-8")
+
+    monkeypatch.setattr(validation_module, "PREINSCRIPTION_DIR", pre_dir)
+
+    rows = load_validation_export(path, preinscriptions_dir=pre_dir)
+
+    assert rows[0]["montant"] == "75.50"
+    assert rows[1]["montant"] == "10.00"
+    assert rows[2]["montant"] == "20"
 
 
 def test_compute_validation_status_applies_rules():

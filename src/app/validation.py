@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import re
 from pathlib import Path
 from typing import Iterable, Mapping
 
 import pandas as pd
 
-from .config import VALIDATION_EXPORT_DIR
+from .config import PREINSCRIPTION_DIR, VALIDATION_EXPORT_DIR
 from .io_utils import normalize_name, strip_accents
 
 
@@ -38,7 +39,113 @@ def find_latest_validation_export(directory: Path | str = VALIDATION_EXPORT_DIR)
     return max(candidates, key=lambda item: item.stat().st_mtime)
 
 
-def load_validation_export(path: Path | str) -> list[dict[str, str]]:
+def find_latest_preinscription_export(directory: Path | str | None = None) -> Path | None:
+    """Return the most recent pre-inscription CSV located in ``directory``."""
+
+    folder = Path(directory or PREINSCRIPTION_DIR)
+    if not folder.exists():
+        return None
+
+    candidates = [
+        path
+        for pattern in ("*.csv", "*.CSV")
+        for path in folder.glob(pattern)
+        if path.is_file()
+    ]
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda item: item.stat().st_mtime)
+
+
+def _normalize_column_name(value: str) -> str:
+    return strip_accents((value or "").strip()).lower()
+
+
+def _parse_amount(raw: object) -> Decimal | None:
+    text = str(raw or "").strip()
+    if not text:
+        return Decimal("0")
+    cleaned = (
+        text.replace("€", "")
+        .replace(" ", "")
+        .replace("\u00A0", "")
+        .replace("\u202F", "")
+        .replace(",", ".")
+    )
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return None
+
+
+def _format_amount(amount: Decimal) -> str:
+    return f"{amount.quantize(Decimal('0.01'))}"
+
+
+def _load_preinscription_lookup(path: Path | str) -> dict[tuple[str, str], Decimal]:
+    source = Path(path)
+    if not source.exists():
+        return {}
+
+    try:
+        df = pd.read_csv(
+            source,
+            sep=None,
+            engine="python",
+            dtype=str,
+            encoding="utf-8",
+        )
+    except UnicodeDecodeError:
+        df = pd.read_csv(
+            source,
+            sep=None,
+            engine="python",
+            dtype=str,
+            encoding="latin-1",
+        )
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    df = df.fillna("")
+    column_lookup = {_normalize_column_name(column): column for column in df.columns}
+
+    nom_column = column_lookup.get("nom adherent")
+    prenom_column = column_lookup.get("prenom adherent")
+    montant_column = column_lookup.get("montant tarif")
+
+    if not (nom_column and prenom_column and montant_column):
+        return {}
+
+    lookup: dict[tuple[str, str], Decimal] = {}
+    for _, row in df.iterrows():
+        nom = normalize_name(str(row.get(nom_column, "")))
+        prenom = normalize_name(str(row.get(prenom_column, "")))
+        if not nom and not prenom:
+            continue
+
+        montant = _parse_amount(row.get(montant_column, ""))
+        if montant is None or not montant:
+            continue
+
+        key = (nom, prenom)
+        amount = montant.quantize(Decimal("0.01"))
+        if key in lookup:
+            lookup[key] = (lookup[key] + amount).quantize(Decimal("0.01"))
+        else:
+            lookup[key] = amount
+
+    return lookup
+
+
+def load_validation_export(
+    path: Path | str,
+    *,
+    preinscriptions_dir: Path | str | None = None,
+) -> list[dict[str, str]]:
     """Load a previously exported validation CSV and return its rows."""
 
     source = Path(path)
@@ -55,7 +162,32 @@ def load_validation_export(path: Path | str) -> list[dict[str, str]]:
             df[column] = ""
 
     df = df.fillna("")
-    return df[["nom", "prenom", "valide_par", "montant"]].to_dict(orient="records")
+    records = df[["nom", "prenom", "valide_par", "montant"]].to_dict(orient="records")
+
+    preinscription_lookup: dict[tuple[str, str], Decimal] = {}
+    latest_preinscription = find_latest_preinscription_export(preinscriptions_dir)
+    if latest_preinscription:
+        preinscription_lookup = _load_preinscription_lookup(latest_preinscription)
+
+    if preinscription_lookup:
+        for record in records:
+            nom = normalize_name(str(record.get("nom", "")))
+            prenom = normalize_name(str(record.get("prenom", "")))
+            if not nom and not prenom:
+                continue
+
+            supplement = preinscription_lookup.get((nom, prenom))
+            if not supplement:
+                continue
+
+            base_amount = _parse_amount(record.get("montant"))
+            if base_amount is None:
+                continue
+
+            total = (base_amount + supplement).quantize(Decimal("0.01"))
+            record["montant"] = _format_amount(total)
+
+    return records
 
 
 def build_validation_lookup(rows: Iterable[Mapping[str, object]]) -> dict[tuple[str, str], dict[str, str]]:
@@ -164,6 +296,7 @@ __all__ = [
     "DbExpiration",
     "build_validation_lookup",
     "compute_validation_status",
+    "find_latest_preinscription_export",
     "find_latest_validation_export",
     "load_latest_expiration_by_person",
     "load_validation_export",
