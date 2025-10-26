@@ -544,6 +544,44 @@ def test_lire_tableau_normalizes_header_variants(tmp_path):
     assert df.iloc[0]["ErreurValide"] == "oui"
 
 
+def test_lire_tableau_backfills_montant_from_validation(tmp_path, monkeypatch):
+    validation_csv = tmp_path / "latest_validation.csv"
+    validation_csv.write_text(
+        "nom;prenom;valide_par;montant\nDUPONT;ALIX;;27.50\n",
+        encoding="utf-8",
+    )
+
+    def _fake_find_latest(_directory=None):
+        return validation_csv
+
+    def _fake_load_validation(path):
+        assert path == validation_csv
+        return [
+            {"nom": "DUPONT", "prenom": "ALIX", "valide_par": "", "montant": "27.50"}
+        ]
+
+    monkeypatch.setattr(
+        "src.app.validation.find_latest_validation_export", _fake_find_latest
+    )
+    monkeypatch.setattr(
+        "src.app.validation.load_validation_export", _fake_load_validation
+    )
+
+    sample = tmp_path / "import.csv"
+    sample.write_text(
+        (
+            "Ignoré\nIgnoré\nIgnoré\n"
+            "Nom,Prénom,Date_de_naissance,Expire_le,Email,Montant\n"
+            "Dupont,Alix,01/01/1990,31/12/2025,test@example.com,\n"
+        ),
+        encoding="utf-8",
+    )
+
+    df = lire_tableau(sample)
+
+    assert df.loc[0, "Montant"] == "27.50"
+
+
 def test_persist_and_load_last_import(tmp_path, monkeypatch):
     from src.app import imports as imports_mod
 
