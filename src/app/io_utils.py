@@ -133,4 +133,65 @@ def lire_tableau(path: str | Path) -> pd.DataFrame:
     for col in ("Nom", "Prénom"):
         df[col] = df[col].fillna("").map(normalize_name)
 
-    return df[COLS_WANTED].fillna("")
+    df = df[COLS_WANTED].fillna("")
+    return _fill_montants_from_latest_validation(df)
+
+
+def _fill_montants_from_latest_validation(df: pd.DataFrame) -> pd.DataFrame:
+    """Backfill empty ``Montant`` cells from the latest validation export."""
+
+    if df.empty or "Montant" not in df.columns:
+        return df
+
+    mask = df["Montant"].map(lambda value: not str(value or "").strip())
+    if not mask.any():
+        return df
+
+    lookup = _load_latest_validation_amount_lookup()
+    if not lookup:
+        return df
+
+    def _lookup_amount(row: pd.Series) -> str:
+        key = (
+            normalize_name(str(row.get("Nom") or "")),
+            normalize_name(str(row.get("Prénom") or "")),
+        )
+        return lookup.get(key, "")
+
+    candidates = df.apply(_lookup_amount, axis=1)
+    df.loc[mask, "Montant"] = candidates.loc[mask].map(lambda value: value or "")
+    return df
+
+
+def _load_latest_validation_amount_lookup() -> dict[tuple[str, str], str]:
+    """Return a ``(Nom, Prénom)`` → ``Montant`` lookup from the latest export."""
+
+    try:  # pragma: no cover - import style varies in packaged builds
+        from .validation import find_latest_validation_export, load_validation_export
+    except ModuleNotFoundError:  # pragma: no cover - packaged executable fallback
+        try:
+            from validation import find_latest_validation_export, load_validation_export  # type: ignore
+        except ModuleNotFoundError:  # pragma: no cover - final fallback
+            from app.validation import find_latest_validation_export, load_validation_export  # type: ignore
+
+    latest = find_latest_validation_export()
+    if not latest:
+        return {}
+
+    try:
+        rows = load_validation_export(latest)
+    except Exception:
+        return {}
+
+    lookup: dict[tuple[str, str], str] = {}
+    for row in rows or []:
+        nom = normalize_name(str(row.get("nom") or ""))
+        prenom = normalize_name(str(row.get("prenom") or ""))
+        montant = str(row.get("montant") or "").strip()
+        if not montant:
+            continue
+        if not nom and not prenom:
+            continue
+        lookup[(nom, prenom)] = montant
+
+    return lookup
